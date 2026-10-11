@@ -301,9 +301,28 @@ export class CollisionSystem {
     const px = player.position.x;
     const py = player.position.y;
 
-    // Meteor collisions
+    // Meteor collisions - only check when meteor is near player in Z
     for (const m of meteorPool.pool) {
       if (!m.active) continue;
+      const mz = m.mesh.position.z;
+
+      // Only check collision when meteor is within player's Z range
+      if (mz < -3 || mz > 3) {
+        // Still track near-miss zone for meteors approaching
+        if (mz > -8 && mz < 3) {
+          const mx = m.mesh.position.x;
+          const my = m.mesh.position.y;
+          const dist = dist2D(px, py, mx, my);
+          if (dist < m.minDistRecorded) {
+            m.minDistRecorded = dist;
+          }
+          if (dist <= m.nearMissRadius) {
+            m.wasInNearMissZone = true;
+          }
+        }
+        continue;
+      }
+
       const mx = m.mesh.position.x;
       const my = m.mesh.position.y;
       const dist = dist2D(px, py, mx, my);
@@ -313,8 +332,8 @@ export class CollisionSystem {
         m.minDistRecorded = dist;
       }
 
-      // Core collision
-      if (dist <= m.coreRadius + player.radius * 0.75) {
+      // Core collision - only triggers on direct hit
+      if (dist <= m.coreRadius + player.radius * 0.4) {
         if (!m.hasDamagedPlayer && !player.isInvuln()) {
           m.hasDamagedPlayer = true;
           this.handleCoreHit(player, m);
@@ -322,7 +341,7 @@ export class CollisionSystem {
         continue;
       }
 
-      // Graze collision
+      // Graze collision - outer dangerous surface
       if (dist <= m.grazeRadius) {
         if (!m.hasDamagedPlayer) {
           m.hasGrazedPlayer = true;
@@ -335,7 +354,7 @@ export class CollisionSystem {
         continue;
       }
 
-      // Near-miss zone tracking
+      // Near-miss zone tracking - large safe zone around meteor
       if (dist <= m.nearMissRadius) {
         m.wasInNearMissZone = true;
       }
@@ -368,6 +387,12 @@ export class CollisionSystem {
     if (player.shields > 0) {
       player.shields--;
       player.setInvuln(C.invulnTime);
+      // Knockback - push player away from meteor
+      const dx = player.position.x - m.mesh.position.x;
+      const dy = player.position.y - m.mesh.position.y;
+      const len = Math.sqrt(dx * dx + dy * dy) || 1;
+      player.targetX += (dx / len) * 2.5;
+      player.targetY += (dy / len) * 2.5;
       eventBus.emit('shieldLost', player.position.clone());
     } else {
       player.alive = false;
@@ -379,13 +404,13 @@ export class CollisionSystem {
     for (const m of meteorPool.pool) {
       if (!m.active || m.hasBeenNearMissed || m.hasDamagedPlayer) continue;
       // Meteor has passed behind the player
-      if (m.mesh.position.z > playerZ + 3) {
+      if (m.mesh.position.z > playerZ + 2) {
         if (m.isGapTrigger && !m.hasDamagedPlayer) {
           // Gap skip - player passed through the gap
           m.hasBeenNearMissed = true;
           eventBus.emit('gapSkip', m.mesh.position.clone());
-        } else if (!m.hasGrazedPlayer && m.wasInNearMissZone && m.minDistRecorded <= m.nearMissRadius && m.minDistRecorded > m.coreRadius + player_radius_buffer) {
-          // Near-miss (only if no graze occurred)
+        } else if (m.wasInNearMissZone && m.minDistRecorded <= m.nearMissRadius && m.minDistRecorded > m.coreRadius + player_radius_buffer) {
+          // Near-miss - player was close but didn't take damage
           m.hasBeenNearMissed = true;
           eventBus.emit('nearMiss', m.mesh.position.clone());
         }
