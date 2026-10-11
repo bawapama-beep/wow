@@ -149,16 +149,16 @@ function getMeteorGeo(detail: number): THREE.IcosahedronGeometry {
   return meteorGeos[detail];
 }
 
-// Dark, desaturated meteor colors that recede into background
-const meteorColors = ['#2a2a35', '#252530', '#2f2835', '#28283a', '#302838', '#2a2530'];
+// Meteor colors - darker but visible with good lighting
+const meteorColors = ['#3a3a45', '#353540', '#3f3845', '#38384a', '#403848', '#3a3540'];
 const meteorMats: THREE.MeshStandardMaterial[] = [];
 function getMeteorMat(idx: number): THREE.MeshStandardMaterial {
   if (!meteorMats[idx]) {
     meteorMats[idx] = new THREE.MeshStandardMaterial({
       color: meteorColors[idx % meteorColors.length],
       flatShading: true,
-      roughness: 0.7,
-      metalness: 0.2,
+      roughness: 0.6,
+      metalness: 0.3,
     });
   }
   return meteorMats[idx];

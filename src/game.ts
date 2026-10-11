@@ -116,21 +116,38 @@ export class Game {
 
   private initScene() {
     this.scene = new THREE.Scene();
-    // Exponential fog for depth and to hide spawn pop-in
-    this.scene.fog = new THREE.FogExp2(0x050510, 0.012);
+    // Exponential fog for depth and to hide spawn pop-in - lighter for better visibility
+    this.scene.fog = new THREE.FogExp2(0x0a0a1a, 0.008);
 
     this.camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 200);
     this.camera.position.set(0, 2.2, 8);
 
-    // Lighting
-    const ambient = new THREE.AmbientLight(0x334466, 0.6);
+    // Lighting - Enhanced for visibility
+    const ambient = new THREE.AmbientLight(0x667788, 1.2);
     this.scene.add(ambient);
-    const dir = new THREE.DirectionalLight(0xffffff, 0.8);
+    
+    // Main directional light (key light)
+    const dir = new THREE.DirectionalLight(0xffffff, 1.5);
     dir.position.set(5, 10, 5);
     this.scene.add(dir);
-    const point = new THREE.PointLight(0x4488ff, 0.5, 50);
+    
+    // Secondary directional light (fill/rim light)
+    const dir2 = new THREE.DirectionalLight(0x88aaff, 0.8);
+    dir2.position.set(-5, 5, -5);
+    this.scene.add(dir2);
+    
+    // Hemisphere light for natural sky/ground lighting
+    const hemi = new THREE.HemisphereLight(0x88aaff, 0x443355, 0.6);
+    this.scene.add(hemi);
+    
+    // Point lights for local illumination
+    const point = new THREE.PointLight(0x4488ff, 1.0, 50);
     point.position.set(0, 0, -20);
     this.scene.add(point);
+    
+    const point2 = new THREE.PointLight(0xff6644, 0.6, 30);
+    point2.position.set(0, 5, 10);
+    this.scene.add(point2);
 
     // Starfield
     this.createStarfield();

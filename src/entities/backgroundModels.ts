@@ -52,11 +52,11 @@ function createRingedPlanet(): THREE.Group {
   // Planet body
   const planetGeometry = new THREE.SphereGeometry(1, 32, 24);
   const planetMaterial = new THREE.MeshStandardMaterial({
-    color: 0x2a1a3e,
-    roughness: 0.8,
-    metalness: 0.1,
-    emissive: 0x0a0515,
-    emissiveIntensity: 0.2,
+    color: 0x4a3a6e,
+    roughness: 0.7,
+    metalness: 0.2,
+    emissive: 0x2a1535,
+    emissiveIntensity: 0.5,
   });
   const planet = new THREE.Mesh(planetGeometry, planetMaterial);
   group.add(planet);
@@ -64,9 +64,9 @@ function createRingedPlanet(): THREE.Group {
   // Atmosphere glow
   const atmosphereGeometry = new THREE.SphereGeometry(1.05, 32, 24);
   const atmosphereMaterial = new THREE.MeshBasicMaterial({
-    color: 0x4400aa,
+    color: 0x6644cc,
     transparent: true,
-    opacity: 0.15,
+    opacity: 0.3,
     side: THREE.BackSide,
     blending: THREE.AdditiveBlending,
   });
@@ -76,9 +76,9 @@ function createRingedPlanet(): THREE.Group {
   // Rings
   const ringGeometry = new THREE.RingGeometry(1.5, 2.5, 64);
   const ringMaterial = new THREE.MeshBasicMaterial({
-    color: 0x6644aa,
+    color: 0x8866cc,
     transparent: true,
-    opacity: 0.4,
+    opacity: 0.6,
     side: THREE.DoubleSide,
     blending: THREE.AdditiveBlending,
   });
@@ -99,10 +99,10 @@ function createRingedPlanet(): THREE.Group {
   const ringParticleGeometry = new THREE.BufferGeometry();
   ringParticleGeometry.setAttribute('position', new THREE.BufferAttribute(ringPositions, 3));
   const ringParticleMaterial = new THREE.PointsMaterial({
-    color: 0x8866cc,
-    size: 0.03,
+    color: 0xaa88ee,
+    size: 0.05,
     transparent: true,
-    opacity: 0.6,
+    opacity: 0.8,
     blending: THREE.AdditiveBlending,
   });
   const ringParticles = new THREE.Points(ringParticleGeometry, ringParticleMaterial);
@@ -125,7 +125,7 @@ function createNebula(): THREE.Group {
       map: nebulaTexture,
       color: colors[i],
       transparent: true,
-      opacity: 0.08 + Math.random() * 0.05,
+      opacity: 0.15 + Math.random() * 0.1,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
       side: THREE.DoubleSide,

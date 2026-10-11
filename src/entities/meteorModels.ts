@@ -10,21 +10,21 @@ export enum MeteorType {
 // === SHARED MATERIALS ===
 const rockMaterials = [
   new THREE.MeshStandardMaterial({
-    color: 0x2a2a35,
-    roughness: 0.9,
-    metalness: 0.1,
+    color: 0x4a4a55,
+    roughness: 0.6,
+    metalness: 0.3,
     flatShading: true,
   }),
   new THREE.MeshStandardMaterial({
-    color: 0x1f2833,
-    roughness: 0.85,
-    metalness: 0.15,
+    color: 0x3f4853,
+    roughness: 0.55,
+    metalness: 0.35,
     flatShading: true,
   }),
   new THREE.MeshStandardMaterial({
-    color: 0x3d2b56,
-    roughness: 0.8,
-    metalness: 0.2,
+    color: 0x5d4b76,
+    roughness: 0.5,
+    metalness: 0.4,
     flatShading: true,
   }),
 ];
