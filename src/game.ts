@@ -469,9 +469,9 @@ export class Game {
       return;
     }
 
-    // Difficulty
+    // Difficulty - faster speed ramp
     this.elapsedTime += dt;
-    this.currentSpeed = clamp(C.baseSpeed + this.elapsedTime * 0.2, C.baseSpeed, C.maxSpeed);
+    this.currentSpeed = clamp(C.baseSpeed + this.elapsedTime * 0.5, C.baseSpeed, C.maxSpeed);
 
     // Boost
     if (this.boostMeter >= C.boostMax && !this.boostActive) {

@@ -116,17 +116,17 @@ export class SpawnSystem {
   }
 
   update(dt: number, speed: number, elapsed: number) {
-    // Spawn interval decreases with time
-    const spawnInterval = clamp(0.85 - elapsed * 0.004, 0.28, 0.85);
+    // Spawn interval decreases with time - much denser
+    const spawnInterval = clamp(0.55 - elapsed * 0.005, 0.14, 0.55);
     this.spawnTimer += dt;
     if (this.spawnTimer >= spawnInterval) {
       this.spawnTimer = 0;
       this.spawnPattern(elapsed, speed);
     }
 
-    // Pickup spawning
+    // Pickup spawning - more frequent
     this.pickupTimer += dt;
-    if (this.pickupTimer >= 1.5) {
+    if (this.pickupTimer >= 1.0) {
       this.pickupTimer = 0;
       this.spawnPickup();
     }
@@ -159,23 +159,24 @@ export class SpawnSystem {
 
   private choosePattern(difficulty: number): PatternType {
     const r = this.rng.next();
-    if (difficulty < 0.2) return 'single';
-    if (difficulty < 0.4) return r < 0.5 ? 'single' : 'cluster';
-    if (difficulty < 0.6) {
-      if (r < 0.3) return 'single';
-      if (r < 0.6) return 'cluster';
-      if (r < 0.8) return 'gap';
+    if (difficulty < 0.15) return 'single';
+    if (difficulty < 0.35) return r < 0.35 ? 'single' : 'cluster';
+    if (difficulty < 0.55) {
+      if (r < 0.15) return 'single';
+      if (r < 0.5) return 'cluster';
+      if (r < 0.75) return 'gap';
       return 'wall';
     }
-    if (r < 0.15) return 'single';
-    if (r < 0.35) return 'cluster';
-    if (r < 0.55) return 'gap';
+    // High density phase - almost no singles
+    if (r < 0.05) return 'single';
+    if (r < 0.3) return 'cluster';
+    if (r < 0.5) return 'gap';
     if (r < 0.75) return 'wall';
     return 'diagonal';
   }
 
   private getMovement(difficulty: number): 'static' | 'drift' | 'oscillate' {
-    const movingChance = clamp((difficulty - 0.25) / 0.75, 0, 0.45);
+    const movingChance = clamp((difficulty - 0.1) / 0.6, 0, 0.55);
     const r = this.rng.next();
     if (r < movingChance * 0.5) return 'drift';
     if (r < movingChance) return 'oscillate';
@@ -192,14 +193,14 @@ export class SpawnSystem {
   }
 
   private spawnCluster(z: number, _speed: number, difficulty: number) {
-    const count = 2 + Math.floor(this.rng.next() * 3);
+    const count = 3 + Math.floor(this.rng.next() * 4);
     const cx = this.rng.range(-2, 2);
     const cy = this.rng.range(-1.5, 1.5);
     for (let i = 0; i < count; i++) {
       const m = this.meteorPool.acquire();
       if (!m) break;
       const angle = (i / count) * Math.PI * 2 + this.rng.range(-0.3, 0.3);
-      const dist = this.rng.range(1.5, 3);
+      const dist = this.rng.range(1.2, 2.8);
       const x = clamp(cx + Math.cos(angle) * dist, C.corridorX[0] + 1, C.corridorX[1] - 1);
       const y = clamp(cy + Math.sin(angle) * dist, C.corridorY[0] + 0.5, C.corridorY[1] - 0.5);
       const radius = this.rng.range(C.meteorRadiusMin, C.meteorRadiusMax * 0.7);
@@ -250,10 +251,10 @@ export class SpawnSystem {
   private spawnWall(z: number, _speed: number, difficulty: number) {
     const holeX = this.rng.range(C.corridorX[0] + 2, C.corridorX[1] - 2);
     const holeY = this.rng.range(C.corridorY[0] + 1, C.corridorY[1] - 1);
-    const holeSize = C.safeGapWidth * 1.2;
+    const holeSize = C.safeGapWidth * 1.1;
 
-    for (let x = C.corridorX[0] + 1; x <= C.corridorX[1] - 1; x += 2.5) {
-      for (let y = C.corridorY[0] + 1; y <= C.corridorY[1] - 1; y += 2.5) {
+    for (let x = C.corridorX[0] + 1; x <= C.corridorX[1] - 1; x += 2.0) {
+      for (let y = C.corridorY[0] + 1; y <= C.corridorY[1] - 1; y += 2.0) {
         if (Math.abs(x - holeX) < holeSize && Math.abs(y - holeY) < holeSize) continue;
         const m = this.meteorPool.acquire();
         if (!m) break;
@@ -266,7 +267,7 @@ export class SpawnSystem {
   private spawnDiagonal(z: number, _speed: number, difficulty: number) {
     const startX = this.rng.next() < 0.5 ? C.corridorX[0] + 1 : C.corridorX[1] - 1;
     const endX = startX === C.corridorX[0] + 1 ? C.corridorX[1] - 1 : C.corridorX[0] + 1;
-    const count = 3 + Math.floor(this.rng.next() * 3);
+    const count = 5 + Math.floor(this.rng.next() * 4);
     for (let i = 0; i < count; i++) {
       const m = this.meteorPool.acquire();
       if (!m) break;
@@ -274,7 +275,7 @@ export class SpawnSystem {
       const x = lerp(startX, endX, t);
       const y = this.rng.range(C.corridorY[0] + 1, C.corridorY[1] - 1);
       const radius = this.rng.range(C.meteorRadiusMin, C.meteorRadiusMax * 0.6);
-      initMeteor(m, x, y, z - i * 4, radius, this.getMovement(difficulty), difficulty);
+      initMeteor(m, x, y, z - i * 3, radius, this.getMovement(difficulty), difficulty);
     }
   }
 
