@@ -289,6 +289,7 @@ export class Game {
     // Reset spawn
     const seed = this.isDailyChallenge ? SeededRandom.fromString(getDailySeed()) : undefined;
     this.spawn.reset(seed);
+    this.spawn.spawnInitialMeteors();
 
     // Reset trail
     if (this.trail) this.trail.dispose();

@@ -115,6 +115,26 @@ export class SpawnSystem {
     this.rng = new SeededRandom(seed || Math.floor(Math.random() * 999999));
   }
 
+  spawnInitialMeteors() {
+    // Pre-populate meteors ahead of the player for immediate action
+    const spawnZ = C.spawnZ;
+    
+    // Spawn several waves at different Z positions
+    for (let wave = 0; wave < 8; wave++) {
+      const z = spawnZ + wave * 15; // Spread meteors from far to near
+      
+      // Alternate between patterns for variety
+      if (wave % 3 === 0) {
+        this.spawnSingle(z, 0, 0.1);
+      } else if (wave % 3 === 1) {
+        this.spawnCluster(z, 0, 0.2);
+      } else {
+        this.spawnSingle(z, 0, 0.15);
+        this.spawnSingle(z - 5, 0, 0.15);
+      }
+    }
+  }
+
   update(dt: number, speed: number, elapsed: number) {
     // Spawn interval decreases with time - much denser
     const spawnInterval = clamp(0.55 - elapsed * 0.005, 0.14, 0.55);
