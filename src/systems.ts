@@ -1,0 +1,506 @@
+import * as THREE from 'three';
+import { C, eventBus, SeededRandom } from './core';
+import { Player, MeteorData, MeteorPool, PickupPool, ParticlePool, FloatingTextPool, initMeteor, updateMeteor } from './entities';
+import { clamp, lerp, dist2D, randRange } from './utils';
+import { Audio } from './audio';
+
+// ============ INPUT SYSTEM ============
+export class InputSystem {
+  targetX = 0;
+  targetY = 0;
+  private pointerActive = false;
+  private keyState: Record<string, boolean> = {};
+  private canvas: HTMLCanvasElement;
+  private keyboardSpeed = 8;
+  private corridorW = C.corridorX[1] - C.corridorX[0];
+  private corridorH = C.corridorY[1] - C.corridorY[0];
+
+  constructor(canvas: HTMLCanvasElement) {
+    this.canvas = canvas;
+    this.bindEvents();
+  }
+
+  private bindEvents() {
+    // Pointer events
+    this.canvas.addEventListener('pointerdown', (e) => {
+      this.pointerActive = true;
+      this.updatePointerTarget(e);
+    });
+    this.canvas.addEventListener('pointermove', (e) => {
+      if (this.pointerActive || e.buttons > 0) {
+        this.updatePointerTarget(e);
+      } else {
+        // Mouse hover steering
+        this.updatePointerTarget(e);
+      }
+    });
+    this.canvas.addEventListener('pointerup', () => { this.pointerActive = false; });
+    this.canvas.addEventListener('pointerleave', () => { this.pointerActive = false; });
+
+    // Touch
+    this.canvas.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      this.pointerActive = true;
+      if (e.touches.length > 0) this.updateTouchTarget(e.touches[0]);
+    }, { passive: false });
+    this.canvas.addEventListener('touchmove', (e) => {
+      e.preventDefault();
+      if (e.touches.length > 0) this.updateTouchTarget(e.touches[0]);
+    }, { passive: false });
+    this.canvas.addEventListener('touchend', () => { this.pointerActive = false; });
+
+    // Keyboard
+    window.addEventListener('keydown', (e) => { this.keyState[e.key.toLowerCase()] = true; });
+    window.addEventListener('keyup', (e) => { this.keyState[e.key.toLowerCase()] = false; });
+  }
+
+  private updatePointerTarget(e: PointerEvent) {
+    const rect = this.canvas.getBoundingClientRect();
+    const nx = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    const ny = -(((e.clientY - rect.top) / rect.height) * 2 - 1);
+    this.targetX = nx * (this.corridorW / 2);
+    this.targetY = ny * (this.corridorH / 2);
+  }
+
+  private updateTouchTarget(touch: Touch) {
+    const rect = this.canvas.getBoundingClientRect();
+    const nx = ((touch.clientX - rect.left) / rect.width) * 2 - 1;
+    const ny = -(((touch.clientY - rect.top) / rect.height) * 2 - 1);
+    this.targetX = nx * (this.corridorW / 2);
+    this.targetY = ny * (this.corridorH / 2);
+  }
+
+  update(dt: number) {
+    let kx = 0, ky = 0;
+    if (this.keyState['a'] || this.keyState['arrowleft']) kx -= 1;
+    if (this.keyState['d'] || this.keyState['arrowright']) kx += 1;
+    if (this.keyState['w'] || this.keyState['arrowup']) ky += 1;
+    if (this.keyState['s'] || this.keyState['arrowdown']) ky -= 1;
+
+    if (kx !== 0 || ky !== 0) {
+      this.targetX = clamp(this.targetX + kx * this.keyboardSpeed * dt, C.corridorX[0], C.corridorX[1]);
+      this.targetY = clamp(this.targetY + ky * this.keyboardSpeed * dt, C.corridorY[0], C.corridorY[1]);
+    }
+  }
+
+  isPausePressed(): boolean {
+    return !!this.keyState['escape'] || !!this.keyState['p'];
+  }
+
+  consumePause() {
+    this.keyState['escape'] = false;
+    this.keyState['p'] = false;
+  }
+}
+
+// ============ SPAWN SYSTEM ============
+type PatternType = 'single' | 'cluster' | 'gap' | 'wall' | 'diagonal';
+
+export class SpawnSystem {
+  private meteorPool: MeteorPool;
+  private pickupPool: PickupPool;
+  private rng: SeededRandom;
+  private spawnTimer = 0;
+  private pickupTimer = 0;
+
+  constructor(meteorPool: MeteorPool, pickupPool: PickupPool, seed?: number) {
+    this.meteorPool = meteorPool;
+    this.pickupPool = pickupPool;
+    this.rng = new SeededRandom(seed || Math.floor(Math.random() * 999999));
+  }
+
+  reset(seed?: number) {
+    this.spawnTimer = 0;
+    this.pickupTimer = 0;
+    this.rng = new SeededRandom(seed || Math.floor(Math.random() * 999999));
+  }
+
+  update(dt: number, speed: number, elapsed: number) {
+    // Spawn interval decreases with time
+    const spawnInterval = clamp(0.85 - elapsed * 0.004, 0.28, 0.85);
+    this.spawnTimer += dt;
+    if (this.spawnTimer >= spawnInterval) {
+      this.spawnTimer = 0;
+      this.spawnPattern(elapsed, speed);
+    }
+
+    // Pickup spawning
+    this.pickupTimer += dt;
+    if (this.pickupTimer >= 1.5) {
+      this.pickupTimer = 0;
+      this.spawnPickup();
+    }
+  }
+
+  private spawnPattern(elapsed: number, speed: number) {
+    const difficulty = clamp(elapsed / 120, 0, 1);
+    const pattern = this.choosePattern(difficulty);
+    const spawnZ = C.spawnZ;
+    const moveSpeed = speed;
+
+    switch (pattern) {
+      case 'single':
+        this.spawnSingle(spawnZ, moveSpeed, difficulty);
+        break;
+      case 'cluster':
+        this.spawnCluster(spawnZ, moveSpeed, difficulty);
+        break;
+      case 'gap':
+        this.spawnGap(spawnZ, moveSpeed, difficulty);
+        break;
+      case 'wall':
+        this.spawnWall(spawnZ, moveSpeed, difficulty);
+        break;
+      case 'diagonal':
+        this.spawnDiagonal(spawnZ, moveSpeed, difficulty);
+        break;
+    }
+  }
+
+  private choosePattern(difficulty: number): PatternType {
+    const r = this.rng.next();
+    if (difficulty < 0.2) return 'single';
+    if (difficulty < 0.4) return r < 0.5 ? 'single' : 'cluster';
+    if (difficulty < 0.6) {
+      if (r < 0.3) return 'single';
+      if (r < 0.6) return 'cluster';
+      if (r < 0.8) return 'gap';
+      return 'wall';
+    }
+    if (r < 0.15) return 'single';
+    if (r < 0.35) return 'cluster';
+    if (r < 0.55) return 'gap';
+    if (r < 0.75) return 'wall';
+    return 'diagonal';
+  }
+
+  private getMovement(difficulty: number): 'static' | 'drift' | 'oscillate' {
+    const movingChance = clamp((difficulty - 0.25) / 0.75, 0, 0.45);
+    const r = this.rng.next();
+    if (r < movingChance * 0.5) return 'drift';
+    if (r < movingChance) return 'oscillate';
+    return 'static';
+  }
+
+  private spawnSingle(z: number, _speed: number, difficulty: number) {
+    const m = this.meteorPool.acquire();
+    if (!m) return;
+    const x = this.rng.range(C.corridorX[0] + 1, C.corridorX[1] - 1);
+    const y = this.rng.range(C.corridorY[0] + 0.5, C.corridorY[1] - 0.5);
+    const radius = this.rng.range(C.meteorRadiusMin, C.meteorRadiusMax * (0.5 + difficulty * 0.5));
+    initMeteor(m, x, y, z, radius, this.getMovement(difficulty), difficulty);
+  }
+
+  private spawnCluster(z: number, _speed: number, difficulty: number) {
+    const count = 2 + Math.floor(this.rng.next() * 3);
+    const cx = this.rng.range(-2, 2);
+    const cy = this.rng.range(-1.5, 1.5);
+    for (let i = 0; i < count; i++) {
+      const m = this.meteorPool.acquire();
+      if (!m) break;
+      const angle = (i / count) * Math.PI * 2 + this.rng.range(-0.3, 0.3);
+      const dist = this.rng.range(1.5, 3);
+      const x = clamp(cx + Math.cos(angle) * dist, C.corridorX[0] + 1, C.corridorX[1] - 1);
+      const y = clamp(cy + Math.sin(angle) * dist, C.corridorY[0] + 0.5, C.corridorY[1] - 0.5);
+      const radius = this.rng.range(C.meteorRadiusMin, C.meteorRadiusMax * 0.7);
+      initMeteor(m, x, y, z + this.rng.range(-2, 2), radius, this.getMovement(difficulty), difficulty);
+    }
+  }
+
+  private spawnGap(z: number, _speed: number, difficulty: number) {
+    const gapX = this.rng.range(C.corridorX[0] + 2, C.corridorX[1] - 2);
+    const gapY = this.rng.range(C.corridorY[0] + 1, C.corridorY[1] - 1);
+    const gapWidth = C.safeGapWidth + this.rng.range(0, 1) * (1 - difficulty * 0.3);
+
+    // Spawn meteors on both sides of the gap
+    const sides = [
+      { x: gapX - gapWidth - this.rng.range(0.5, 2), y: gapY + this.rng.range(-1, 1) },
+      { x: gapX + gapWidth + this.rng.range(0.5, 2), y: gapY + this.rng.range(-1, 1) },
+      { x: gapX + this.rng.range(-0.5, 0.5), y: gapY + gapWidth + this.rng.range(0.5, 1.5) },
+      { x: gapX + this.rng.range(-0.5, 0.5), y: gapY - gapWidth - this.rng.range(0.5, 1.5) },
+    ];
+
+    let triggerPlaced = false;
+    for (const s of sides) {
+      if (this.rng.next() < 0.7) {
+        const m = this.meteorPool.acquire();
+        if (!m) break;
+        const x = clamp(s.x, C.corridorX[0] + 0.5, C.corridorX[1] - 0.5);
+        const y = clamp(s.y, C.corridorY[0] + 0.5, C.corridorY[1] - 0.5);
+        const radius = this.rng.range(C.meteorRadiusMin, C.meteorRadiusMax * 0.8);
+        initMeteor(m, x, y, z, radius, 'static', difficulty);
+        // Mark first meteor as gap trigger
+        if (!triggerPlaced) {
+          m.isGapTrigger = true;
+          triggerPlaced = true;
+        }
+      }
+    }
+    // If no trigger placed, force one
+    if (!triggerPlaced) {
+      const m = this.meteorPool.acquire();
+      if (m) {
+        initMeteor(m, gapX, gapY, z, C.meteorRadiusMin, 'static', difficulty);
+        m.isGapTrigger = true;
+        m.mesh.visible = false; // Invisible trigger
+      }
+    }
+  }
+
+  private spawnWall(z: number, _speed: number, difficulty: number) {
+    const holeX = this.rng.range(C.corridorX[0] + 2, C.corridorX[1] - 2);
+    const holeY = this.rng.range(C.corridorY[0] + 1, C.corridorY[1] - 1);
+    const holeSize = C.safeGapWidth * 1.2;
+
+    for (let x = C.corridorX[0] + 1; x <= C.corridorX[1] - 1; x += 2.5) {
+      for (let y = C.corridorY[0] + 1; y <= C.corridorY[1] - 1; y += 2.5) {
+        if (Math.abs(x - holeX) < holeSize && Math.abs(y - holeY) < holeSize) continue;
+        const m = this.meteorPool.acquire();
+        if (!m) break;
+        const radius = this.rng.range(C.meteorRadiusMin, C.meteorRadiusMax * 0.6);
+        initMeteor(m, x + this.rng.range(-0.3, 0.3), y + this.rng.range(-0.3, 0.3), z, radius, this.getMovement(difficulty), difficulty);
+      }
+    }
+  }
+
+  private spawnDiagonal(z: number, _speed: number, difficulty: number) {
+    const startX = this.rng.next() < 0.5 ? C.corridorX[0] + 1 : C.corridorX[1] - 1;
+    const endX = startX === C.corridorX[0] + 1 ? C.corridorX[1] - 1 : C.corridorX[0] + 1;
+    const count = 3 + Math.floor(this.rng.next() * 3);
+    for (let i = 0; i < count; i++) {
+      const m = this.meteorPool.acquire();
+      if (!m) break;
+      const t = i / (count - 1);
+      const x = lerp(startX, endX, t);
+      const y = this.rng.range(C.corridorY[0] + 1, C.corridorY[1] - 1);
+      const radius = this.rng.range(C.meteorRadiusMin, C.meteorRadiusMax * 0.6);
+      initMeteor(m, x, y, z - i * 4, radius, this.getMovement(difficulty), difficulty);
+    }
+  }
+
+  private spawnPickup() {
+    const p = this.pickupPool.acquire();
+    if (!p) return;
+    p.active = true;
+    p.mesh.visible = true;
+    p.position.set(
+      this.rng.range(C.corridorX[0] + 1, C.corridorX[1] - 1),
+      this.rng.range(C.corridorY[0] + 0.5, C.corridorY[1] - 0.5),
+      C.spawnZ
+    );
+    p.mesh.position.copy(p.position);
+    p.attracted = false;
+  }
+}
+
+// ============ COLLISION SYSTEM ============
+export class CollisionSystem {
+  update(player: Player, meteorPool: MeteorPool, pickupPool: PickupPool, magnetRadius: number, elapsed: number, dt: number) {
+    if (!player.alive) return;
+
+    const px = player.position.x;
+    const py = player.position.y;
+
+    // Meteor collisions
+    for (const m of meteorPool.pool) {
+      if (!m.active) continue;
+      const mx = m.mesh.position.x;
+      const my = m.mesh.position.y;
+      const dist = dist2D(px, py, mx, my);
+
+      // Track minimum distance for near-miss detection
+      if (dist < m.minDistRecorded) {
+        m.minDistRecorded = dist;
+      }
+
+      // Core collision
+      if (dist <= m.coreRadius + player.radius * 0.75) {
+        if (!m.hasDamagedPlayer && !player.isInvuln()) {
+          m.hasDamagedPlayer = true;
+          this.handleCoreHit(player, m);
+        }
+        continue;
+      }
+
+      // Graze collision
+      if (dist <= m.grazeRadius) {
+        if (!m.hasDamagedPlayer) {
+          m.hasGrazedPlayer = true;
+          m.grazeAccum += dt;
+          if (m.grazeAccum >= C.grazeTickInterval) {
+            m.grazeAccum = 0;
+            eventBus.emit('graze', m);
+          }
+        }
+        continue;
+      }
+
+      // Near-miss zone tracking
+      if (dist <= m.nearMissRadius) {
+        m.wasInNearMissZone = true;
+      }
+    }
+
+    // Pickup collection & magnet
+    for (const p of pickupPool.pool) {
+      if (!p.active) continue;
+      const dist = dist2D(px, py, p.position.x, p.position.y);
+
+      if (dist < magnetRadius) {
+        p.attracted = true;
+      }
+
+      if (p.attracted) {
+        const dir = new THREE.Vector3(px - p.position.x, py - p.position.y, 0).normalize();
+        p.position.add(dir.multiplyScalar(15 * dt));
+        p.mesh.position.copy(p.position);
+      }
+
+      if (dist < player.radius + 0.3) {
+        p.active = false;
+        p.mesh.visible = false;
+        eventBus.emit('pickupCollected', p.position.clone());
+      }
+    }
+  }
+
+  private handleCoreHit(player: Player, m: MeteorData) {
+    if (player.shields > 0) {
+      player.shields--;
+      player.setInvuln(C.invulnTime);
+      eventBus.emit('shieldLost', player.position.clone());
+    } else {
+      player.alive = false;
+      eventBus.emit('playerCrashed', player.position.clone());
+    }
+  }
+
+  resolveNearMisses(meteorPool: MeteorPool, playerZ: number) {
+    for (const m of meteorPool.pool) {
+      if (!m.active || m.hasBeenNearMissed || m.hasDamagedPlayer) continue;
+      // Meteor has passed behind the player
+      if (m.mesh.position.z > playerZ + 3) {
+        if (m.isGapTrigger && !m.hasDamagedPlayer) {
+          // Gap skip - player passed through the gap
+          m.hasBeenNearMissed = true;
+          eventBus.emit('gapSkip', m.mesh.position.clone());
+        } else if (!m.hasGrazedPlayer && m.wasInNearMissZone && m.minDistRecorded <= m.nearMissRadius && m.minDistRecorded > m.coreRadius + player_radius_buffer) {
+          // Near-miss (only if no graze occurred)
+          m.hasBeenNearMissed = true;
+          eventBus.emit('nearMiss', m.mesh.position.clone());
+        }
+      }
+    }
+  }
+}
+
+const player_radius_buffer = 0.3;
+
+// ============ CAMERA SYSTEM ============
+export class CameraSystem {
+  camera: THREE.PerspectiveCamera;
+  private targetPos = new THREE.Vector3();
+  private targetLook = new THREE.Vector3();
+  private shakeOffset = new THREE.Vector3();
+  private shakeIntensity = 0;
+  private shakeDecay = 5;
+  private baseFOV = 65;
+
+  constructor(camera: THREE.PerspectiveCamera) {
+    this.camera = camera;
+    this.camera.position.set(0, C.cameraOffset.y, C.cameraOffset.z);
+  }
+
+  update(player: Player, dt: number, boostActive: boolean) {
+    // Target position behind player
+    this.targetPos.set(
+      player.position.x * 0.3 + C.cameraOffset.x,
+      player.position.y * 0.3 + C.cameraOffset.y,
+      C.cameraOffset.z
+    );
+
+    // Smooth follow
+    const t = 1 - Math.exp(-C.cameraSmoothing * dt);
+    this.camera.position.x = lerp(this.camera.position.x, this.targetPos.x, t);
+    this.camera.position.y = lerp(this.camera.position.y, this.targetPos.y, t);
+    this.camera.position.z = lerp(this.camera.position.z, this.targetPos.z, t);
+
+    // Look target
+    this.targetLook.set(
+      player.position.x * 0.5 + C.cameraLookOffset.x,
+      player.position.y * 0.3 + C.cameraLookOffset.y,
+      C.cameraLookOffset.z
+    );
+    this.camera.lookAt(this.targetLook);
+
+    // FOV during boost
+    const targetFOV = boostActive ? this.baseFOV + 10 : this.baseFOV;
+    this.camera.fov = lerp(this.camera.fov, targetFOV, t * 0.5);
+    this.camera.updateProjectionMatrix();
+
+    // Screen shake
+    if (this.shakeIntensity > 0) {
+      this.shakeIntensity = Math.max(0, this.shakeIntensity - this.shakeDecay * dt);
+      this.shakeOffset.set(
+        (Math.random() - 0.5) * this.shakeIntensity,
+        (Math.random() - 0.5) * this.shakeIntensity,
+        0
+      );
+      this.camera.position.add(this.shakeOffset);
+    }
+  }
+
+  shake(intensity: number) {
+    this.shakeIntensity = Math.max(this.shakeIntensity, intensity);
+  }
+}
+
+// ============ EFFECT SYSTEM ============
+export class EffectSystem {
+  private particles: ParticlePool;
+  private floatingTexts: FloatingTextPool;
+  private slowMoTimer = 0;
+  private slowMoScale = 1;
+
+  constructor(particles: ParticlePool, floatingTexts: FloatingTextPool) {
+    this.particles = particles;
+    this.floatingTexts = floatingTexts;
+  }
+
+  update(dt: number) {
+    this.particles.update(dt);
+    this.floatingTexts.update(dt);
+    if (this.slowMoTimer > 0) {
+      this.slowMoTimer -= dt;
+      if (this.slowMoTimer <= 0) this.slowMoScale = 1;
+    }
+  }
+
+  getTimeScale(): number {
+    return this.slowMoTimer > 0 ? this.slowMoScale : 1;
+  }
+
+  spawnSparks(pos: THREE.Vector3, color: string, count = 8) {
+    this.particles.emit(pos, color, count, 5, 0.4);
+  }
+
+  spawnExplosion(pos: THREE.Vector3) {
+    this.particles.emit(pos, '#ff4400', 30, 8, 0.8);
+    this.particles.emit(pos, '#ffaa00', 20, 6, 0.6);
+    this.particles.emit(pos, '#ffffff', 10, 10, 0.3);
+  }
+
+  showFloatingText(text: string, pos: THREE.Vector3, color: string, duration = 1.0) {
+    this.floatingTexts.show(text, pos, color, duration);
+  }
+
+  triggerSlowMo(duration: number, scale: number) {
+    this.slowMoTimer = duration;
+    this.slowMoScale = scale;
+  }
+
+  releaseAll() {
+    this.particles.releaseAll();
+    this.floatingTexts.releaseAll();
+  }
+}
