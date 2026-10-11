@@ -21,33 +21,20 @@ export class InputSystem {
   }
 
   private bindEvents() {
-    // Pointer events
+    // Pointer events handle BOTH mouse and touch automatically
     this.canvas.addEventListener('pointerdown', (e) => {
       this.pointerActive = true;
       this.updatePointerTarget(e);
     });
     this.canvas.addEventListener('pointermove', (e) => {
-      if (this.pointerActive || e.buttons > 0) {
-        this.updatePointerTarget(e);
-      } else {
-        // Mouse hover steering
+      // If dragging (touch) or just moving (mouse)
+      if (this.pointerActive || e.pointerType === 'mouse') {
         this.updatePointerTarget(e);
       }
     });
     this.canvas.addEventListener('pointerup', () => { this.pointerActive = false; });
+    this.canvas.addEventListener('pointercancel', () => { this.pointerActive = false; });
     this.canvas.addEventListener('pointerleave', () => { this.pointerActive = false; });
-
-    // Touch
-    this.canvas.addEventListener('touchstart', (e) => {
-      e.preventDefault();
-      this.pointerActive = true;
-      if (e.touches.length > 0) this.updateTouchTarget(e.touches[0]);
-    }, { passive: false });
-    this.canvas.addEventListener('touchmove', (e) => {
-      e.preventDefault();
-      if (e.touches.length > 0) this.updateTouchTarget(e.touches[0]);
-    }, { passive: false });
-    this.canvas.addEventListener('touchend', () => { this.pointerActive = false; });
 
     // Keyboard
     window.addEventListener('keydown', (e) => { this.keyState[e.key.toLowerCase()] = true; });
@@ -58,14 +45,6 @@ export class InputSystem {
     const rect = this.canvas.getBoundingClientRect();
     const nx = ((e.clientX - rect.left) / rect.width) * 2 - 1;
     const ny = -(((e.clientY - rect.top) / rect.height) * 2 - 1);
-    this.targetX = nx * (this.corridorW / 2);
-    this.targetY = ny * (this.corridorH / 2);
-  }
-
-  private updateTouchTarget(touch: Touch) {
-    const rect = this.canvas.getBoundingClientRect();
-    const nx = ((touch.clientX - rect.left) / rect.width) * 2 - 1;
-    const ny = -(((touch.clientY - rect.top) / rect.height) * 2 - 1);
     this.targetX = nx * (this.corridorW / 2);
     this.targetY = ny * (this.corridorH / 2);
   }
@@ -241,7 +220,6 @@ export class SpawnSystem {
       { x: gapX + this.rng.range(-0.5, 0.5), y: gapY - gapWidth - this.rng.range(0.5, 1.5) },
     ];
 
-    let triggerPlaced = false;
     for (const s of sides) {
       if (this.rng.next() < 0.7) {
         const m = this.meteorPool.acquire();
@@ -250,22 +228,11 @@ export class SpawnSystem {
         const y = clamp(s.y, C.corridorY[0] + 0.5, C.corridorY[1] - 0.5);
         const radius = this.rng.range(C.meteorRadiusMin, C.meteorRadiusMax * 0.8);
         initMeteor(m, x, y, z, radius, 'static', difficulty);
-        // Mark first meteor as gap trigger
-        if (!triggerPlaced) {
-          m.isGapTrigger = true;
-          triggerPlaced = true;
-        }
       }
     }
-    // If no trigger placed, force one
-    if (!triggerPlaced) {
-      const m = this.meteorPool.acquire();
-      if (m) {
-        initMeteor(m, gapX, gapY, z, C.meteorRadiusMin, 'static', difficulty);
-        m.isGapTrigger = true;
-        m.mesh.visible = false; // Invisible trigger
-      }
-    }
+
+    // Register gap trigger for immediate feedback when player passes through
+    eventBus.emit('registerGapTrigger', z);
   }
 
   private spawnWall(z: number, _speed: number, difficulty: number) {
@@ -278,8 +245,14 @@ export class SpawnSystem {
         if (Math.abs(x - holeX) < holeSize && Math.abs(y - holeY) < holeSize) continue;
         const m = this.meteorPool.acquire();
         if (!m) break;
+
+        // Add jitter to prevent overlapping and grid-looking walls
+        const jitterX = this.rng.range(-0.6, 0.6);
+        const jitterY = this.rng.range(-0.6, 0.6);
+        const jitterZ = this.rng.range(-1.5, 1.5);
+
         const radius = this.rng.range(C.meteorRadiusMin, C.meteorRadiusMax * 0.6);
-        initMeteor(m, x + this.rng.range(-0.3, 0.3), y + this.rng.range(-0.3, 0.3), z, radius, this.getMovement(difficulty), difficulty);
+        initMeteor(m, x + jitterX, y + jitterY, z + jitterZ, radius, this.getMovement(difficulty), difficulty);
       }
     }
   }
@@ -353,8 +326,8 @@ export class CollisionSystem {
         m.minDistRecorded = dist;
       }
 
-      // Core collision - only triggers on direct hit
-      if (dist <= m.coreRadius + player.radius * 0.4) {
+      // Core collision - triggers when ship visibly overlaps the meteor
+      if (dist <= m.coreRadius + player.radius * 0.8) {
         if (!m.hasDamagedPlayer && !player.isInvuln()) {
           m.hasDamagedPlayer = true;
           this.handleCoreHit(player, m);
@@ -426,11 +399,7 @@ export class CollisionSystem {
       if (!m.active || m.hasBeenNearMissed || m.hasDamagedPlayer) continue;
       // Meteor has passed behind the player
       if (m.mesh.position.z > playerZ + 2) {
-        if (m.isGapTrigger && !m.hasDamagedPlayer) {
-          // Gap skip - player passed through the gap
-          m.hasBeenNearMissed = true;
-          eventBus.emit('gapSkip', m.mesh.position.clone());
-        } else if (m.wasInNearMissZone && m.minDistRecorded <= m.nearMissRadius && m.minDistRecorded > m.coreRadius + player_radius_buffer) {
+        if (m.wasInNearMissZone && m.minDistRecorded <= m.nearMissRadius && m.minDistRecorded > m.coreRadius + player_radius_buffer) {
           // Near-miss - player was close but didn't take damage
           m.hasBeenNearMissed = true;
           eventBus.emit('nearMiss', m.mesh.position.clone());

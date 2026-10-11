@@ -111,7 +111,6 @@ export interface MeteorData {
   hasDamagedPlayer: boolean;
   wasInNearMissZone: boolean;
   minDistRecorded: number;
-  isGapTrigger: boolean;
   grazeAccum: number;
   movementType: MeteorMovement;
   driftVel: THREE.Vector3;
@@ -165,7 +164,7 @@ export class MeteorPool {
       this.pool.push({
         active: false, mesh, coreRadius: 1, grazeRadius: 1.7, nearMissRadius: 1.65,
         hasBeenNearMissed: false, hasGrazedPlayer: false, hasDamagedPlayer: false,
-        wasInNearMissZone: false, minDistRecorded: 999, isGapTrigger: false,
+        wasInNearMissZone: false, minDistRecorded: 999,
         grazeAccum: 0, movementType: 'static',
         driftVel: new THREE.Vector3(), oscillatePhase: 0, oscillateAmp: 0,
         baseX: 0, baseY: 0, rotSpeed: new THREE.Vector3(),
@@ -202,7 +201,6 @@ export function initMeteor(m: MeteorData, x: number, y: number, z: number, radiu
   m.hasDamagedPlayer = false;
   m.wasInNearMissZone = false;
   m.minDistRecorded = 999;
-  m.isGapTrigger = false;
   m.grazeAccum = 0;
   m.movementType = movement;
   m.baseX = x;
@@ -356,6 +354,9 @@ export interface FloatingText {
   velocity: THREE.Vector3;
 }
 
+// Texture cache to prevent GC stutter from creating new canvases every frame
+const textureCache = new Map<string, THREE.Texture>();
+
 function createTextTexture(text: string, color: string): THREE.Texture {
   const canvas = document.createElement('canvas');
   canvas.width = 256;
@@ -367,6 +368,16 @@ function createTextTexture(text: string, color: string): THREE.Texture {
   ctx.fillText(text, 128, 42);
   const tex = new THREE.CanvasTexture(canvas);
   tex.needsUpdate = true;
+  return tex;
+}
+
+function getOrCreateTextTexture(text: string, color: string): THREE.Texture {
+  const key = `${text}_${color}`;
+  if (textureCache.has(key)) {
+    return textureCache.get(key)!;
+  }
+  const tex = createTextTexture(text, color);
+  textureCache.set(key, tex);
   return tex;
 }
 
@@ -393,9 +404,14 @@ export class FloatingTextPool {
         ft.sprite.visible = true;
         ft.sprite.position.copy(pos);
         ft.sprite.position.y += 1;
-        (ft.sprite.material as THREE.SpriteMaterial).map?.dispose();
-        (ft.sprite.material as THREE.SpriteMaterial).map = createTextTexture(text, color);
-        (ft.sprite.material as THREE.SpriteMaterial).opacity = 1;
+        
+        // Use cached texture to prevent GC stutter
+        const tex = getOrCreateTextTexture(text, color);
+        const mat = ft.sprite.material as THREE.SpriteMaterial;
+        mat.map = tex;
+        mat.opacity = 1;
+        mat.needsUpdate = true;
+        
         ft.life = duration;
         ft.maxLife = duration;
         ft.velocity.set(0, 2, 0);

@@ -64,6 +64,9 @@ export class Game {
   // Starfield
   private stars!: THREE.Points;
 
+  // Gap triggers for immediate feedback
+  private gapTriggers: { z: number; active: boolean }[] = [];
+
   // Callbacks for React UI
   onStateChange?: (state: GameStateType) => void;
   onScoreUpdate?: (data: { score: number; multiplier: number; combo: number; shields: number; boost: number; distance: number; bestScore: number }) => void;
@@ -166,20 +169,6 @@ export class Game {
       this.onFloatingText?.('SKIM!', '#44ffaa');
     });
 
-    eventBus.on('gapSkip', (pos: THREE.Vector3) => {
-      this.gapSkipsThisRun++;
-      this.combo += 2;
-      this.bestComboThisRun = Math.max(this.bestComboThisRun, this.combo);
-      this.skillScore += C.gapSkipScore * this.multiplier;
-      this.boostMeter = Math.min(C.boostMax, this.boostMeter + C.gapSkipBoost);
-      this.effects.showFloatingText('GAP SKIP!', pos, '#ffdd00');
-      this.effects.spawnSparks(pos, '#ffdd00', 12);
-      this.cameraSys.shake(0.3);
-      Audio.gapSkip();
-      this.checkMultiplier();
-      this.onFloatingText?.('GAP SKIP!', '#ffdd00');
-    });
-
     eventBus.on('graze', (m: any) => {
       const grazeMult = 1 + this.save.upgradeLevels.grazeStabilizer * 0.15;
       this.skillScore += C.grazeScoreTick * this.multiplier * grazeMult;
@@ -220,6 +209,10 @@ export class Game {
     eventBus.on('boostActivated', () => {
       Audio.boost();
       this.onFloatingText?.('BOOST!', '#ffaa00');
+    });
+
+    eventBus.on('registerGapTrigger', (z: number) => {
+      this.gapTriggers.push({ z, active: true });
     });
 
     // Visibility change
@@ -267,6 +260,7 @@ export class Game {
     this.bestComboThisRun = 0;
     this.streakTimer = 0;
     this.runStats = null;
+    this.gapTriggers = [];
 
     // Reset entities
     this.meteorPool.releaseAll();
@@ -532,6 +526,36 @@ export class Game {
     const magnetRadius = C.magnetBaseRadius + this.save.upgradeLevels.magnet * 0.8;
     this.collision.update(this.player, this.meteorPool, this.pickupPool, magnetRadius, this.elapsedTime, dt);
     this.collision.resolveNearMisses(this.meteorPool, this.player.position.z);
+
+    // Gap triggers - immediate feedback when player passes through
+    for (let i = this.gapTriggers.length - 1; i >= 0; i--) {
+      const trigger = this.gapTriggers[i];
+      trigger.z += moveZ;
+
+      if (trigger.z > this.player.position.z && trigger.active) {
+        // Only award if player didn't crash into the gap walls
+        if (this.player.alive) {
+          trigger.active = false;
+          this.gapSkipsThisRun++;
+          this.combo += 2;
+          this.bestComboThisRun = Math.max(this.bestComboThisRun, this.combo);
+          this.skillScore += C.gapSkipScore * this.multiplier;
+          this.boostMeter = Math.min(C.boostMax, this.boostMeter + C.gapSkipBoost);
+          const pos = new THREE.Vector3(this.player.position.x, this.player.position.y, trigger.z);
+          this.effects.showFloatingText('GAP SKIP!', pos, '#ffdd00');
+          this.effects.spawnSparks(pos, '#ffdd00', 12);
+          this.cameraSys.shake(0.3);
+          Audio.gapSkip();
+          this.checkMultiplier();
+          this.onFloatingText?.('GAP SKIP!', '#ffdd00');
+        }
+      }
+
+      // Clean up old triggers
+      if (trigger.z > C.despawnZ) {
+        this.gapTriggers.splice(i, 1);
+      }
+    }
 
     // Scoring
     this.distanceScore += C.distanceScorePerSec * (effectiveSpeed / C.baseSpeed) * dt;

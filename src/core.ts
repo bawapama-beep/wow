@@ -51,7 +51,7 @@ export type GameEvent =
   | 'multiplierChanged' | 'scoreChanged' | 'runStarted' | 'runEnded'
   | 'missionCompleted' | 'newPersonalBest' | 'comboChanged'
   | 'stardustEarned' | 'floatingText' | 'screenShake' | 'slowMotion'
-  | 'stateChanged';
+  | 'stateChanged' | 'registerGapTrigger';
 
 type EventCallback = (...args: any[]) => void;
 
