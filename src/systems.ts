@@ -365,9 +365,62 @@ export class SpawnSystem {
 // ============ COLLISION SYSTEM ============
 export class CollisionSystem {
   private spawnSystem: SpawnSystem | null = null;
+  private prevPlayerPos = new THREE.Vector3();
 
   setSpawnSystem(spawn: SpawnSystem) {
     this.spawnSystem = spawn;
+  }
+
+  // Swept sphere collision to prevent tunneling at high speeds
+  private sweptSphereCollision(
+    prevX: number, prevY: number,
+    currX: number, currY: number,
+    radius: number,
+    targetX: number, targetY: number, targetRadius: number
+  ): { hit: boolean; t: number } {
+    const dx = currX - prevX;
+    const dy = currY - prevY;
+    const distSq = dx * dx + dy * dy;
+    
+    if (distSq < 0.0001) {
+      // No movement, just check current position
+      const d = dist2D(currX, currY, targetX, targetY);
+      return { hit: d < radius + targetRadius, t: 0 };
+    }
+    
+    // Ray-circle intersection
+    const fx = prevX - targetX;
+    const fy = prevY - targetY;
+    const combinedRadius = radius + targetRadius;
+    
+    const a = distSq;
+    const b = 2 * (fx * dx + fy * dy);
+    const c = fx * fx + fy * fy - combinedRadius * combinedRadius;
+    
+    let discriminant = b * b - 4 * a * c;
+    if (discriminant < 0) {
+      return { hit: false, t: 0 };
+    }
+    
+    discriminant = Math.sqrt(discriminant);
+    const t1 = (-b - discriminant) / (2 * a);
+    const t2 = (-b + discriminant) / (2 * a);
+    
+    // Check if collision happens within this frame (t between 0 and 1)
+    if (t1 >= 0 && t1 <= 1) {
+      return { hit: true, t: t1 };
+    }
+    if (t2 >= 0 && t2 <= 1) {
+      return { hit: true, t: t2 };
+    }
+    
+    // Check if we're already inside
+    const currentDist = dist2D(currX, currY, targetX, targetY);
+    if (currentDist < combinedRadius) {
+      return { hit: true, t: 0 };
+    }
+    
+    return { hit: false, t: 0 };
   }
 
   update(player: Player, meteorPool: MeteorPool, pickupPool: PickupPool, magnetRadius: number, elapsed: number, dt: number, isOverdrive: boolean, canBreakSmall: boolean) {
@@ -375,6 +428,8 @@ export class CollisionSystem {
 
     const px = player.position.x;
     const py = player.position.y;
+    const prevPx = this.prevPlayerPos.x;
+    const prevPy = this.prevPlayerPos.y;
 
     // Meteor collisions - only check when meteor is near player in Z
     for (const m of meteorPool.pool) {
@@ -407,8 +462,15 @@ export class CollisionSystem {
         m.minDistRecorded = dist;
       }
 
+      // Use swept collision for core hits to prevent tunneling at high speeds
+      const coreCollision = this.sweptSphereCollision(
+        prevPx, prevPy, px, py,
+        player.radius * 0.8,
+        mx, my, m.coreRadius
+      );
+
       // Core collision - triggers when ship visibly overlaps the meteor
-      if (dist <= m.coreRadius + player.radius * 0.8) {
+      if (coreCollision.hit || dist <= m.coreRadius + player.radius * 0.8) {
         // Overdrive: destroy small meteors if ship can break them
         if (isOverdrive && canBreakSmall && m.coreRadius < 1.2) {
           m.active = false;
@@ -441,6 +503,9 @@ export class CollisionSystem {
         m.wasInNearMissZone = true;
       }
     }
+
+    // Store current position for next frame's swept collision
+    this.prevPlayerPos.set(px, py, 0);
 
     // Pickup collection & magnet
     for (const p of pickupPool.pool) {

@@ -5,6 +5,7 @@ import { InputSystem, SpawnSystem, CollisionSystem, CameraSystem, EffectSystem }
 import { Audio, initAudio, setMuted } from './audio';
 import { clamp } from './utils';
 import { createBackground, BackgroundModel } from './entities/backgroundModels';
+import { setupPostProcessing, PostProcessingSetup } from './effects/postProcessing';
 
 export interface RunStats {
   score: number;
@@ -25,6 +26,7 @@ export class Game {
   private scene!: THREE.Scene;
   private camera!: THREE.PerspectiveCamera;
   private canvas: HTMLCanvasElement;
+  private postFX!: PostProcessingSetup;
 
   // Systems
   private input!: InputSystem;
@@ -90,6 +92,7 @@ export class Game {
     this.save = loadSave();
     this.initRenderer();
     this.initScene();
+    this.initPostProcessing();
     this.initEntities();
     this.initSystems();
     this.bindEvents();
@@ -105,6 +108,10 @@ export class Game {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.setClearColor(0x050510);
+  }
+
+  private initPostProcessing() {
+    this.postFX = setupPostProcessing(this.renderer, this.scene, this.camera);
   }
 
   private initScene() {
@@ -662,7 +669,7 @@ export class Game {
   }
 
   private render() {
-    this.renderer.render(this.scene, this.camera);
+    this.postFX.update();
   }
 
   private onResize() {
@@ -671,6 +678,7 @@ export class Game {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
+    this.postFX.resize(w, h);
   }
 
   dispose() {
