@@ -44,6 +44,32 @@ export const C = {
   maxUpgradeLevel: 5,
 } as const;
 
+// ============ PACING SYSTEM ============
+export type PacingPhase = 'BREATHE' | 'BUILD' | 'INTENSE' | 'CHAOS';
+
+export interface PacingConfig {
+  phase: PacingPhase;
+  duration: number; // seconds
+  densityMultiplier: number;
+  allowedPatterns: PatternType[];
+}
+
+export type PatternType = 'single' | 'cluster' | 'gap' | 'wall' | 'diagonal';
+
+export const PACING_PHASES: PacingConfig[] = [
+  { phase: 'BREATHE', duration: 4.0, densityMultiplier: 0.4, allowedPatterns: ['single', 'gap'] },
+  { phase: 'BUILD', duration: 6.0, densityMultiplier: 0.8, allowedPatterns: ['single', 'cluster', 'gap'] },
+  { phase: 'INTENSE', duration: 8.0, densityMultiplier: 1.3, allowedPatterns: ['cluster', 'gap', 'wall', 'diagonal'] },
+  { phase: 'CHAOS', duration: 5.0, densityMultiplier: 1.8, allowedPatterns: ['cluster', 'wall', 'diagonal'] },
+];
+
+// ============ OVERDRIVE ============
+export const OVERDRIVE_COMBO_THRESHOLD = 10;
+export const OVERDRIVE_DURATION = 6.0; // seconds
+
+// ============ MERCY WINDOW ============
+export const MERCY_WINDOW_DURATION = 2.5; // seconds after shield loss/crash
+
 // ============ EVENT BUS ============
 export type GameEvent =
   | 'nearMiss' | 'gapSkip' | 'graze' | 'pickupCollected'
@@ -51,7 +77,9 @@ export type GameEvent =
   | 'multiplierChanged' | 'scoreChanged' | 'runStarted' | 'runEnded'
   | 'missionCompleted' | 'newPersonalBest' | 'comboChanged'
   | 'stardustEarned' | 'floatingText' | 'screenShake' | 'slowMotion'
-  | 'stateChanged' | 'registerGapTrigger';
+  | 'stateChanged' | 'registerGapTrigger'
+  | 'overdriveStart' | 'overdriveEnd' | 'skimZoneEnter' | 'skimZoneExit'
+  | 'phaseChanged' | 'hitStop' | 'meteorDestroyed';
 
 type EventCallback = (...args: any[]) => void;
 
@@ -209,12 +237,56 @@ export interface ShipDef {
   accentColor: string;
   trailColor: string;
   scale: number;
+  // Unique traits
+  canBreakSmall: boolean; // Destroys small meteors on contact instead of taking damage
+  overdriveBonus: number; // Extra score multiplier during overdrive
+  skimZoneRadius: number; // Size of the skim zone indicator
+  description: string;
 }
 
 export const SHIPS: ShipDef[] = [
-  { id: 'starter', name: 'Starter Skimmer', cost: 0, handling: 1.0, bodyColor: '#4488ff', accentColor: '#88ccff', trailColor: '#4488ff', scale: 1.0 },
-  { id: 'comet', name: 'Comet Wing', cost: 500, handling: 0.85, bodyColor: '#ff6644', accentColor: '#ffaa44', trailColor: '#ff6644', scale: 1.05 },
-  { id: 'razor', name: 'Void Razor', cost: 1200, handling: 1.2, bodyColor: '#aa44ff', accentColor: '#ff44aa', trailColor: '#aa44ff', scale: 0.95 },
+  {
+    id: 'starter',
+    name: 'Starter Skimmer',
+    cost: 0,
+    handling: 1.0,
+    bodyColor: '#00ffff',
+    accentColor: '#88ffff',
+    trailColor: '#00ffff',
+    scale: 1.0,
+    canBreakSmall: false,
+    overdriveBonus: 1.0,
+    skimZoneRadius: 1.2,
+    description: 'Balanced handling. The classic void runner.',
+  },
+  {
+    id: 'comet',
+    name: 'Comet Wing',
+    cost: 500,
+    handling: 0.85,
+    bodyColor: '#ff4500',
+    accentColor: '#ffaa00',
+    trailColor: '#ff6600',
+    scale: 1.05,
+    canBreakSmall: true, // Can plow through small meteors during overdrive
+    overdriveBonus: 1.5, // 50% more score during overdrive
+    skimZoneRadius: 1.0,
+    description: 'Heavy hitter. Breaks small meteors in Overdrive. +50% Overdrive score.',
+  },
+  {
+    id: 'razor',
+    name: 'Void Razor',
+    cost: 1200,
+    handling: 1.2,
+    bodyColor: '#aa44ff',
+    accentColor: '#ff44aa',
+    trailColor: '#cc44ff',
+    scale: 0.95,
+    canBreakSmall: false,
+    overdriveBonus: 2.0, // 2x score during overdrive
+    skimZoneRadius: 1.5, // Larger skim zone = easier near-misses
+    description: 'Precision blade. Larger skim zone. +100% Overdrive score.',
+  },
 ];
 
 // ============ MISSION DEFINITIONS ============

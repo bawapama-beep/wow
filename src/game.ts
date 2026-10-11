@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { C, eventBus, GameState, loadSave, writeSave, SHIPS, MISSIONS, getDailySeed, SeededRandom, type SaveData, type GameStateType } from './core';
+import { C, eventBus, GameState, loadSave, writeSave, SHIPS, MISSIONS, getDailySeed, SeededRandom, OVERDRIVE_COMBO_THRESHOLD, OVERDRIVE_DURATION, type SaveData, type GameStateType } from './core';
 import { Player, MeteorPool, PickupPool, ParticlePool, FloatingTextPool, Trail, updateMeteor } from './entities';
 import { InputSystem, SpawnSystem, CollisionSystem, CameraSystem, EffectSystem } from './systems';
 import { Audio, initAudio, setMuted } from './audio';
@@ -61,8 +61,19 @@ export class Game {
   private streakTimer = 0;
   private lastPauseState = false;
 
+  // Overdrive / Flow State
+  private isOverdrive = false;
+  private overdriveTimer = 0;
+
+  // Hit Stop
+  private hitStopTimer = 0;
+  private hitStopScale = 1;
+
   // Starfield
   private stars!: THREE.Points;
+
+  // Parallax background elements
+  private parallaxObjects: THREE.Mesh[] = [];
 
   // Gap triggers for immediate feedback
   private gapTriggers: { z: number; active: boolean }[] = [];
@@ -97,7 +108,8 @@ export class Game {
 
   private initScene() {
     this.scene = new THREE.Scene();
-    this.scene.fog = new THREE.Fog(0x050510, 40, 130);
+    // Exponential fog for depth and to hide spawn pop-in
+    this.scene.fog = new THREE.FogExp2(0x050510, 0.012);
 
     this.camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 200);
     this.camera.position.set(0, 2.2, 8);
@@ -115,8 +127,39 @@ export class Game {
     // Starfield
     this.createStarfield();
 
+    // Parallax background elements - large distant shapes for depth
+    this.createParallaxBackground();
+
     // Resize
     window.addEventListener('resize', () => this.onResize());
+  }
+
+  private createParallaxBackground() {
+    // Large wireframe ring far in the background
+    const ring1Geo = new THREE.TorusGeometry(30, 0.5, 8, 32);
+    const ring1Mat = new THREE.MeshBasicMaterial({ color: 0x222244, wireframe: true, transparent: true, opacity: 0.3 });
+    const ring1 = new THREE.Mesh(ring1Geo, ring1Mat);
+    ring1.position.set(20, 10, -180);
+    ring1.rotation.x = Math.PI * 0.3;
+    this.scene.add(ring1);
+    this.parallaxObjects.push(ring1);
+
+    // Wireframe sphere
+    const sphere1Geo = new THREE.IcosahedronGeometry(15, 1);
+    const sphere1Mat = new THREE.MeshBasicMaterial({ color: 0x1a1a3a, wireframe: true, transparent: true, opacity: 0.2 });
+    const sphere1 = new THREE.Mesh(sphere1Geo, sphere1Mat);
+    sphere1.position.set(-25, -5, -200);
+    this.scene.add(sphere1);
+    this.parallaxObjects.push(sphere1);
+
+    // Another ring
+    const ring2Geo = new THREE.TorusGeometry(20, 0.3, 6, 24);
+    const ring2Mat = new THREE.MeshBasicMaterial({ color: 0x331144, wireframe: true, transparent: true, opacity: 0.25 });
+    const ring2 = new THREE.Mesh(ring2Geo, ring2Mat);
+    ring2.position.set(-15, 15, -160);
+    ring2.rotation.z = Math.PI * 0.5;
+    this.scene.add(ring2);
+    this.parallaxObjects.push(ring2);
   }
 
   private createStarfield() {
@@ -150,6 +193,7 @@ export class Game {
     this.input = new InputSystem(this.canvas);
     this.spawn = new SpawnSystem(this.meteorPool, this.pickupPool);
     this.collision = new CollisionSystem();
+    this.collision.setSpawnSystem(this.spawn);
     this.cameraSys = new CameraSystem(this.camera);
     this.effects = new EffectSystem(this.particlePool, this.floatingTextPool);
   }
@@ -159,14 +203,26 @@ export class Game {
       this.nearMissesThisRun++;
       this.combo++;
       this.bestComboThisRun = Math.max(this.bestComboThisRun, this.combo);
-      this.skillScore += C.nearMissScore * this.multiplier;
+      const overdriveMult = this.isOverdrive ? (SHIPS.find(s => s.id === this.save.selectedShipId) || SHIPS[0]).overdriveBonus : 1;
+      this.skillScore += C.nearMissScore * this.multiplier * overdriveMult;
       this.boostMeter = Math.min(C.boostMax, this.boostMeter + C.nearMissBoost);
       this.effects.showFloatingText('SKIM!', pos, '#44ffaa');
       this.effects.spawnSparks(pos, '#44ffaa', 6);
       this.cameraSys.shake(0.15);
+      // Hit stop - brief dramatic pause
+      this.hitStopTimer = 0.05;
+      this.hitStopScale = 0.1;
       Audio.nearMiss();
       this.checkMultiplier();
       this.onFloatingText?.('SKIM!', '#44ffaa');
+    });
+
+    eventBus.on('meteorDestroyed', (pos: THREE.Vector3, radius: number) => {
+      this.effects.spawnExplosion(pos);
+      this.cameraSys.shake(0.2);
+      this.skillScore += 30 * this.multiplier;
+      this.combo++;
+      this.onFloatingText?.('SMASH!', '#ff4400');
     });
 
     eventBus.on('graze', (m: any) => {
@@ -191,9 +247,13 @@ export class Game {
     eventBus.on('shieldLost', (pos: THREE.Vector3) => {
       this.combo = 0;
       this.multiplier = 1;
+      this.isOverdrive = false;
+      this.player.setOverdrive(false);
       this.effects.showFloatingText('SHIELD LOST', pos, '#ff4444');
       this.effects.spawnExplosion(pos);
       this.cameraSys.shake(0.5);
+      // Trigger mercy window - reduced meteor density for a few seconds
+      this.spawn.triggerMercyWindow();
       Audio.shieldHit();
       this.onFloatingText?.('SHIELD LOST', '#ff4444');
     });
@@ -482,6 +542,31 @@ export class Game {
       }
     }
 
+    // Overdrive / Flow State
+    if (this.combo >= OVERDRIVE_COMBO_THRESHOLD && !this.isOverdrive) {
+      this.isOverdrive = true;
+      this.overdriveTimer = OVERDRIVE_DURATION;
+      this.player.setOverdrive(true);
+      eventBus.emit('overdriveStart');
+      this.onFloatingText?.('⚡ OVERDRIVE! ⚡', '#ffaa00');
+    }
+    if (this.isOverdrive) {
+      this.overdriveTimer -= dt;
+      if (this.overdriveTimer <= 0 || this.combo < OVERDRIVE_COMBO_THRESHOLD) {
+        this.isOverdrive = false;
+        this.player.setOverdrive(false);
+        eventBus.emit('overdriveEnd');
+      }
+    }
+
+    // Hit Stop - brief pause on impactful events
+    if (this.hitStopTimer > 0) {
+      this.hitStopTimer -= dt;
+      if (this.hitStopTimer <= 0) {
+        this.hitStopScale = 1;
+      }
+    }
+
     const speedMult = this.boostActive ? C.boostSpeedMult : 1;
     const effectiveSpeed = this.currentSpeed * speedMult;
 
@@ -504,6 +589,10 @@ export class Game {
       p.position.z += moveZ;
       p.mesh.position.z = p.position.z;
       p.mesh.rotation.y += dt * 3;
+      p.mesh.rotation.x += dt * 2;
+      // Pulsing scale animation
+      const pulseScale = 1.0 + Math.sin(Date.now() * 0.005 + p.position.x) * 0.2;
+      p.mesh.scale.setScalar(pulseScale);
 
       if (p.position.z > C.despawnZ) {
         this.pickupPool.release(p);
@@ -524,7 +613,8 @@ export class Game {
 
     // Collision
     const magnetRadius = C.magnetBaseRadius + this.save.upgradeLevels.magnet * 0.8;
-    this.collision.update(this.player, this.meteorPool, this.pickupPool, magnetRadius, this.elapsedTime, dt);
+    const shipDef = SHIPS.find(s => s.id === this.save.selectedShipId) || SHIPS[0];
+    this.collision.update(this.player, this.meteorPool, this.pickupPool, magnetRadius, this.elapsedTime, dt, this.isOverdrive, shipDef.canBreakSmall);
     this.collision.resolveNearMisses(this.meteorPool, this.player.position.z);
 
     // Gap triggers - immediate feedback when player passes through
@@ -574,7 +664,7 @@ export class Game {
     this.effects.update(dt);
 
     // Camera
-    this.cameraSys.update(this.player, dt, this.boostActive);
+    this.cameraSys.update(this.player, dt, this.currentSpeed, this.combo, this.boostActive, this.isOverdrive);
 
     // HUD update
     this.onScoreUpdate?.({

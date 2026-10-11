@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { C, eventBus, SeededRandom } from './core';
+import { C, eventBus, SeededRandom, PACING_PHASES, MERCY_WINDOW_DURATION, type PacingPhase, type PatternType } from './core';
 import { Player, MeteorData, MeteorPool, PickupPool, ParticlePool, FloatingTextPool, initMeteor, updateMeteor } from './entities';
 import { clamp, lerp, dist2D, randRange } from './utils';
 import { Audio } from './audio';
@@ -73,14 +73,23 @@ export class InputSystem {
 }
 
 // ============ SPAWN SYSTEM ============
-type PatternType = 'single' | 'cluster' | 'gap' | 'wall' | 'diagonal';
-
 export class SpawnSystem {
   private meteorPool: MeteorPool;
   private pickupPool: PickupPool;
   private rng: SeededRandom;
   private spawnTimer = 0;
   private pickupTimer = 0;
+
+  // Pacing wave system
+  private phaseIndex = 0;
+  private phaseElapsed = 0;
+  private currentPhase: PacingPhase = 'BREATHE';
+
+  // Mercy window
+  private mercyWindowEnd = 0;
+
+  // Weighted random with memory
+  private lastPattern: PatternType = 'single';
 
   constructor(meteorPool: MeteorPool, pickupPool: PickupPool, seed?: number) {
     this.meteorPool = meteorPool;
@@ -92,6 +101,19 @@ export class SpawnSystem {
     this.spawnTimer = 0;
     this.pickupTimer = 0;
     this.rng = new SeededRandom(seed || Math.floor(Math.random() * 999999));
+    this.phaseIndex = 0;
+    this.phaseElapsed = 0;
+    this.currentPhase = 'BREATHE';
+    this.mercyWindowEnd = 0;
+    this.lastPattern = 'single';
+  }
+
+  triggerMercyWindow() {
+    this.mercyWindowEnd = performance.now() / 1000 + MERCY_WINDOW_DURATION;
+  }
+
+  private isInMercyWindow(): boolean {
+    return (performance.now() / 1000) < this.mercyWindowEnd;
   }
 
   spawnInitialMeteors() {
@@ -115,17 +137,40 @@ export class SpawnSystem {
   }
 
   update(dt: number, speed: number, elapsed: number) {
-    // Spawn interval decreases with time - much denser
-    const spawnInterval = clamp(0.55 - elapsed * 0.005, 0.14, 0.55);
+    // Update pacing phase
+    this.phaseElapsed += dt;
+    const currentConfig = PACING_PHASES[this.phaseIndex];
+    if (this.phaseElapsed >= currentConfig.duration) {
+      this.phaseElapsed = 0;
+      this.phaseIndex = (this.phaseIndex + 1) % PACING_PHASES.length;
+      const newPhase = PACING_PHASES[this.phaseIndex].phase;
+      if (newPhase !== this.currentPhase) {
+        this.currentPhase = newPhase;
+        eventBus.emit('phaseChanged', newPhase);
+      }
+    }
+
+    // Apply pacing + mercy window density
+    const phaseConfig = PACING_PHASES[this.phaseIndex];
+    let densityMult = phaseConfig.densityMultiplier;
+    if (this.isInMercyWindow()) {
+      densityMult *= 0.3; // Mercy window reduces density
+    }
+
+    // Smooth spawn interval based on elapsed time + pacing
+    const baseInterval = clamp(0.55 - elapsed * 0.003, 0.18, 0.55);
+    const spawnInterval = baseInterval / densityMult;
+
     this.spawnTimer += dt;
     if (this.spawnTimer >= spawnInterval) {
       this.spawnTimer = 0;
       this.spawnPattern(elapsed, speed);
     }
 
-    // Pickup spawning - more frequent
+    // Pickup spawning - more frequent during BREATHE phase
+    const pickupInterval = this.currentPhase === 'BREATHE' ? 0.7 : 1.2;
     this.pickupTimer += dt;
-    if (this.pickupTimer >= 1.0) {
+    if (this.pickupTimer >= pickupInterval) {
       this.pickupTimer = 0;
       this.spawnPickup();
     }
@@ -156,22 +201,52 @@ export class SpawnSystem {
     }
   }
 
-  private choosePattern(difficulty: number): PatternType {
-    const r = this.rng.next();
-    if (difficulty < 0.15) return 'single';
-    if (difficulty < 0.35) return r < 0.35 ? 'single' : 'cluster';
-    if (difficulty < 0.55) {
-      if (r < 0.15) return 'single';
-      if (r < 0.5) return 'cluster';
-      if (r < 0.75) return 'gap';
-      return 'wall';
+  private choosePattern(_difficulty: number): PatternType {
+    const phaseConfig = PACING_PHASES[this.phaseIndex];
+    const allowed = phaseConfig.allowedPatterns;
+
+    // During mercy window, only allow safe patterns
+    if (this.isInMercyWindow()) {
+      const mercyAllowed = allowed.filter(p => p === 'single' || p === 'gap');
+      if (mercyAllowed.length > 0) {
+        return mercyAllowed[Math.floor(this.rng.next() * mercyAllowed.length)];
+      }
+      return 'single';
     }
-    // High density phase - almost no singles
-    if (r < 0.05) return 'single';
-    if (r < 0.3) return 'cluster';
-    if (r < 0.5) return 'gap';
-    if (r < 0.75) return 'wall';
-    return 'diagonal';
+
+    // Weighted random with memory - avoid repeating same pattern
+    const weights: Record<PatternType, number> = {
+      single: 1,
+      cluster: 1,
+      gap: 1,
+      wall: 1,
+      diagonal: 1,
+    };
+
+    // Penalize the last pattern to encourage variety
+    weights[this.lastPattern] *= 0.2;
+
+    // Penalize intense patterns if last was also intense
+    if (this.lastPattern === 'wall' || this.lastPattern === 'cluster') {
+      weights.wall *= 0.5;
+      weights.cluster *= 0.5;
+      weights.gap *= 2.0; // Favor gaps after intense patterns
+    }
+
+    // Filter to allowed patterns only
+    const totalWeight = allowed.reduce((sum, p) => sum + weights[p], 0);
+    let roll = this.rng.next() * totalWeight;
+
+    for (const pattern of allowed) {
+      roll -= weights[pattern];
+      if (roll <= 0) {
+        this.lastPattern = pattern;
+        return pattern;
+      }
+    }
+
+    this.lastPattern = allowed[allowed.length - 1];
+    return allowed[allowed.length - 1];
   }
 
   private getMovement(difficulty: number): 'static' | 'drift' | 'oscillate' {
@@ -289,11 +364,18 @@ export class SpawnSystem {
 
 // ============ COLLISION SYSTEM ============
 export class CollisionSystem {
-  update(player: Player, meteorPool: MeteorPool, pickupPool: PickupPool, magnetRadius: number, elapsed: number, dt: number) {
+  private spawnSystem: SpawnSystem | null = null;
+
+  setSpawnSystem(spawn: SpawnSystem) {
+    this.spawnSystem = spawn;
+  }
+
+  update(player: Player, meteorPool: MeteorPool, pickupPool: PickupPool, magnetRadius: number, elapsed: number, dt: number, isOverdrive: boolean, canBreakSmall: boolean) {
     if (!player.alive) return;
 
     const px = player.position.x;
     const py = player.position.y;
+    let anyInSkimZone = false;
 
     // Meteor collisions - only check when meteor is near player in Z
     for (const m of meteorPool.pool) {
@@ -328,6 +410,13 @@ export class CollisionSystem {
 
       // Core collision - triggers when ship visibly overlaps the meteor
       if (dist <= m.coreRadius + player.radius * 0.8) {
+        // Overdrive: destroy small meteors if ship can break them
+        if (isOverdrive && canBreakSmall && m.coreRadius < 1.2) {
+          m.active = false;
+          m.mesh.visible = false;
+          eventBus.emit('meteorDestroyed', m.mesh.position.clone(), m.coreRadius);
+          continue;
+        }
         if (!m.hasDamagedPlayer && !player.isInvuln()) {
           m.hasDamagedPlayer = true;
           this.handleCoreHit(player, m);
@@ -335,8 +424,9 @@ export class CollisionSystem {
         continue;
       }
 
-      // Graze collision - outer dangerous surface
+      // Graze collision - outer dangerous surface (skim zone)
       if (dist <= m.grazeRadius) {
+        anyInSkimZone = true;
         if (!m.hasDamagedPlayer) {
           m.hasGrazedPlayer = true;
           m.grazeAccum += dt;
@@ -350,9 +440,13 @@ export class CollisionSystem {
 
       // Near-miss zone tracking - large safe zone around meteor
       if (dist <= m.nearMissRadius) {
+        anyInSkimZone = true; // Also counts as being in the skim zone indicator range
         m.wasInNearMissZone = true;
       }
     }
+
+    // Update player's skim zone visual state
+    player.setSkimZone(anyInSkimZone);
 
     // Pickup collection & magnet
     for (const p of pickupPool.pool) {
@@ -418,15 +512,17 @@ export class CameraSystem {
   private targetLook = new THREE.Vector3();
   private shakeOffset = new THREE.Vector3();
   private shakeIntensity = 0;
-  private shakeDecay = 5;
-  private baseFOV = 65;
+  private shakeDecay = 0.9; // Multiplicative decay per frame
+  private baseFOV = 60;
+  private maxFOV = 85;
+  private currentFOVTarget = 60;
 
   constructor(camera: THREE.PerspectiveCamera) {
     this.camera = camera;
     this.camera.position.set(0, C.cameraOffset.y, C.cameraOffset.z);
   }
 
-  update(player: Player, dt: number, boostActive: boolean) {
+  update(player: Player, dt: number, speed: number, combo: number, boostActive: boolean, isOverdrive: boolean) {
     // Target position behind player
     this.targetPos.set(
       player.position.x * 0.3 + C.cameraOffset.x,
@@ -448,20 +544,29 @@ export class CameraSystem {
     );
     this.camera.lookAt(this.targetLook);
 
-    // FOV during boost
-    const targetFOV = boostActive ? this.baseFOV + 10 : this.baseFOV;
-    this.camera.fov = lerp(this.camera.fov, targetFOV, t * 0.5);
+    // Dynamic FOV based on speed, combo, boost, and overdrive
+    const speedFactor = clamp((speed - C.baseSpeed) / (C.maxSpeed - C.baseSpeed), 0, 1);
+    const comboFactor = clamp(combo / 20, 0, 1);
+    let targetFOV = this.baseFOV;
+    targetFOV += speedFactor * 12; // Up to +12 from speed
+    targetFOV += comboFactor * 8;  // Up to +8 from combo
+    if (boostActive) targetFOV += 8;
+    if (isOverdrive) targetFOV += 5;
+    targetFOV = clamp(targetFOV, this.baseFOV, this.maxFOV);
+
+    this.currentFOVTarget = lerp(this.currentFOVTarget, targetFOV, dt * 3);
+    this.camera.fov = this.currentFOVTarget;
     this.camera.updateProjectionMatrix();
 
-    // Screen shake
-    if (this.shakeIntensity > 0) {
-      this.shakeIntensity = Math.max(0, this.shakeIntensity - this.shakeDecay * dt);
+    // Screen shake with multiplicative decay
+    if (this.shakeIntensity > 0.001) {
       this.shakeOffset.set(
-        (Math.random() - 0.5) * this.shakeIntensity,
-        (Math.random() - 0.5) * this.shakeIntensity,
+        (Math.random() - 0.5) * this.shakeIntensity * 2,
+        (Math.random() - 0.5) * this.shakeIntensity * 2,
         0
       );
       this.camera.position.add(this.shakeOffset);
+      this.shakeIntensity *= this.shakeDecay;
     }
   }
 

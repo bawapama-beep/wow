@@ -16,24 +16,42 @@ export class Player {
   roll = 0;
   pitch = 0;
   trailIntensity = 1;
+  inSkimZone = false;
+  isOverdrive = false;
   private bodyMesh!: THREE.Mesh;
   private engineGlow!: THREE.Mesh;
+  private skimAura!: THREE.Mesh;
   private shipDef: ShipDef;
+  private bodyMat!: THREE.MeshStandardMaterial;
+  private auraMat!: THREE.MeshBasicMaterial;
 
   constructor(scene: THREE.Scene, shipId: string) {
     this.shipDef = SHIPS.find(s => s.id === shipId) || SHIPS[0];
     this.mesh = new THREE.Group();
 
-    // Body - sleek ship shape
+    // Body - sleek ship shape with emissive material
     const bodyGeo = new THREE.ConeGeometry(0.3 * this.shipDef.scale, 1.2 * this.shipDef.scale, 4);
     bodyGeo.rotateX(Math.PI / 2);
-    const bodyMat = new THREE.MeshPhongMaterial({ color: this.shipDef.bodyColor, flatShading: true });
-    this.bodyMesh = new THREE.Mesh(bodyGeo, bodyMat);
+    this.bodyMat = new THREE.MeshStandardMaterial({
+      color: this.shipDef.bodyColor,
+      emissive: this.shipDef.bodyColor,
+      emissiveIntensity: 0.8,
+      flatShading: true,
+      roughness: 0.3,
+      metalness: 0.6,
+    });
+    this.bodyMesh = new THREE.Mesh(bodyGeo, this.bodyMat);
     this.mesh.add(this.bodyMesh);
 
     // Wings
     const wingGeo = new THREE.BoxGeometry(1.4 * this.shipDef.scale, 0.05, 0.5 * this.shipDef.scale);
-    const wingMat = new THREE.MeshPhongMaterial({ color: this.shipDef.accentColor, flatShading: true });
+    const wingMat = new THREE.MeshStandardMaterial({
+      color: this.shipDef.accentColor,
+      emissive: this.shipDef.accentColor,
+      emissiveIntensity: 0.5,
+      flatShading: true,
+      roughness: 0.4,
+    });
     const wings = new THREE.Mesh(wingGeo, wingMat);
     wings.position.z = 0.2;
     this.mesh.add(wings);
@@ -45,7 +63,34 @@ export class Player {
     this.engineGlow.position.z = 0.7;
     this.mesh.add(this.engineGlow);
 
+    // Skim zone aura - visual indicator of the risk/reward zone
+    const auraGeo = new THREE.SphereGeometry(this.shipDef.skimZoneRadius, 16, 16);
+    this.auraMat = new THREE.MeshBasicMaterial({
+      color: '#00ffff',
+      transparent: true,
+      opacity: 0.08,
+      wireframe: true,
+      depthWrite: false,
+    });
+    this.skimAura = new THREE.Mesh(auraGeo, this.auraMat);
+    this.mesh.add(this.skimAura);
+
     scene.add(this.mesh);
+  }
+
+  setSkimZone(active: boolean) {
+    this.inSkimZone = active;
+  }
+
+  setOverdrive(active: boolean) {
+    this.isOverdrive = active;
+    if (active) {
+      this.bodyMat.emissive.set('#ffaa00');
+      this.bodyMat.emissiveIntensity = 1.5;
+    } else {
+      this.bodyMat.emissive.set(this.shipDef.bodyColor);
+      this.bodyMat.emissiveIntensity = 0.8;
+    }
   }
 
   update(dt: number, steeringResponse: number) {
@@ -77,6 +122,26 @@ export class Player {
     // Engine glow pulse
     const pulse = 0.8 + Math.sin(Date.now() * 0.01) * 0.2;
     this.engineGlow.scale.setScalar(pulse * this.trailIntensity);
+
+    // Skim aura animation - changes color/opacity based on proximity to meteors
+    if (this.inSkimZone) {
+      // Bright gold when in danger zone
+      this.auraMat.color.lerp(new THREE.Color('#ffaa00'), dt * 8);
+      this.auraMat.opacity = lerp(this.auraMat.opacity, 0.25, dt * 6);
+      this.skimAura.rotation.y += dt * 2;
+      this.skimAura.rotation.x += dt * 1.5;
+    } else if (this.isOverdrive) {
+      // Pulsing rainbow during overdrive
+      const hue = (Date.now() * 0.001) % 1;
+      this.auraMat.color.setHSL(hue, 1, 0.5);
+      this.auraMat.opacity = lerp(this.auraMat.opacity, 0.3, dt * 4);
+      this.skimAura.rotation.y += dt * 4;
+    } else {
+      // Faint cyan when safe
+      this.auraMat.color.lerp(new THREE.Color('#00ffff'), dt * 4);
+      this.auraMat.opacity = lerp(this.auraMat.opacity, 0.05, dt * 4);
+      this.skimAura.rotation.y += dt * 0.5;
+    }
   }
 
   setInvuln(time: number) {
@@ -140,11 +205,17 @@ function getMeteorGeo(detail: number): THREE.IcosahedronGeometry {
   return meteorGeos[detail];
 }
 
-const meteorColors = ['#554433', '#665544', '#443322', '#553333', '#444455', '#664444'];
-const meteorMats: THREE.MeshPhongMaterial[] = [];
-function getMeteorMat(idx: number): THREE.MeshPhongMaterial {
+// Dark, desaturated meteor colors that recede into background
+const meteorColors = ['#2a2a35', '#252530', '#2f2835', '#28283a', '#302838', '#2a2530'];
+const meteorMats: THREE.MeshStandardMaterial[] = [];
+function getMeteorMat(idx: number): THREE.MeshStandardMaterial {
   if (!meteorMats[idx]) {
-    meteorMats[idx] = new THREE.MeshPhongMaterial({ color: meteorColors[idx % meteorColors.length], flatShading: true });
+    meteorMats[idx] = new THREE.MeshStandardMaterial({
+      color: meteorColors[idx % meteorColors.length],
+      flatShading: true,
+      roughness: 0.7,
+      metalness: 0.2,
+    });
   }
   return meteorMats[idx];
 }
@@ -243,7 +314,13 @@ export interface PickupData {
 }
 
 const pickupGeo = new THREE.OctahedronGeometry(0.2, 0);
-const pickupMat = new THREE.MeshBasicMaterial({ color: '#44ffaa' });
+const pickupMat = new THREE.MeshStandardMaterial({
+  color: '#00ffcc',
+  emissive: '#00ffcc',
+  emissiveIntensity: 1.2,
+  roughness: 0.2,
+  metalness: 0.8,
+});
 
 export class PickupPool {
   pool: PickupData[] = [];
