@@ -375,7 +375,6 @@ export class CollisionSystem {
 
     const px = player.position.x;
     const py = player.position.y;
-    let anyInSkimZone = false;
 
     // Meteor collisions - only check when meteor is near player in Z
     for (const m of meteorPool.pool) {
@@ -426,7 +425,6 @@ export class CollisionSystem {
 
       // Graze collision - outer dangerous surface (skim zone)
       if (dist <= m.grazeRadius) {
-        anyInSkimZone = true;
         if (!m.hasDamagedPlayer) {
           m.hasGrazedPlayer = true;
           m.grazeAccum += dt;
@@ -440,13 +438,9 @@ export class CollisionSystem {
 
       // Near-miss zone tracking - large safe zone around meteor
       if (dist <= m.nearMissRadius) {
-        anyInSkimZone = true; // Also counts as being in the skim zone indicator range
         m.wasInNearMissZone = true;
       }
     }
-
-    // Update player's skim zone visual state
-    player.setSkimZone(anyInSkimZone);
 
     // Pickup collection & magnet
     for (const p of pickupPool.pool) {

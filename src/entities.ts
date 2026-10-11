@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { C, SHIPS, ShipDef } from './core';
 import { clamp, lerp, randRange } from './utils';
+import { createPlayerShip, PlayerShipModel } from './entities/playerShip';
+import { createMeteorModel, MeteorType, updateMeteorModel } from './entities/meteorModels';
 
 // ============ PLAYER ============
 export class Player {
@@ -16,84 +18,47 @@ export class Player {
   roll = 0;
   pitch = 0;
   trailIntensity = 1;
-  inSkimZone = false;
   isOverdrive = false;
-  private bodyMesh!: THREE.Mesh;
-  private engineGlow!: THREE.Mesh;
-  private skimAura!: THREE.Mesh;
+  private shipModel!: PlayerShipModel;
   private shipDef: ShipDef;
-  private bodyMat!: THREE.MeshStandardMaterial;
-  private auraMat!: THREE.MeshBasicMaterial;
 
   constructor(scene: THREE.Scene, shipId: string) {
     this.shipDef = SHIPS.find(s => s.id === shipId) || SHIPS[0];
-    this.mesh = new THREE.Group();
-
-    // Body - sleek ship shape with emissive material
-    const bodyGeo = new THREE.ConeGeometry(0.3 * this.shipDef.scale, 1.2 * this.shipDef.scale, 4);
-    bodyGeo.rotateX(Math.PI / 2);
-    this.bodyMat = new THREE.MeshStandardMaterial({
-      color: this.shipDef.bodyColor,
-      emissive: this.shipDef.bodyColor,
-      emissiveIntensity: 0.8,
-      flatShading: true,
-      roughness: 0.3,
-      metalness: 0.6,
-    });
-    this.bodyMesh = new THREE.Mesh(bodyGeo, this.bodyMat);
-    this.mesh.add(this.bodyMesh);
-
-    // Wings
-    const wingGeo = new THREE.BoxGeometry(1.4 * this.shipDef.scale, 0.05, 0.5 * this.shipDef.scale);
-    const wingMat = new THREE.MeshStandardMaterial({
-      color: this.shipDef.accentColor,
-      emissive: this.shipDef.accentColor,
-      emissiveIntensity: 0.5,
-      flatShading: true,
-      roughness: 0.4,
-    });
-    const wings = new THREE.Mesh(wingGeo, wingMat);
-    wings.position.z = 0.2;
-    this.mesh.add(wings);
-
-    // Engine glow
-    const glowGeo = new THREE.SphereGeometry(0.15, 8, 8);
-    const glowMat = new THREE.MeshBasicMaterial({ color: this.shipDef.trailColor });
-    this.engineGlow = new THREE.Mesh(glowGeo, glowMat);
-    this.engineGlow.position.z = 0.7;
-    this.mesh.add(this.engineGlow);
-
-    // Skim zone aura - visual indicator of the risk/reward zone
-    const auraGeo = new THREE.SphereGeometry(this.shipDef.skimZoneRadius, 16, 16);
-    this.auraMat = new THREE.MeshBasicMaterial({
-      color: '#00ffff',
-      transparent: true,
-      opacity: 0.08,
-      wireframe: true,
-      depthWrite: false,
-    });
-    this.skimAura = new THREE.Mesh(auraGeo, this.auraMat);
-    this.mesh.add(this.skimAura);
+    
+    // Create detailed ship model
+    this.shipModel = createPlayerShip();
+    this.mesh = this.shipModel.group;
+    
+    // Apply ship-specific colors
+    this.applyShipColors();
 
     scene.add(this.mesh);
   }
 
-  setSkimZone(active: boolean) {
-    this.inSkimZone = active;
+  private applyShipColors() {
+    // Update materials with ship-specific colors
+    const hullMaterial = this.shipModel.group.children[0] as THREE.Mesh;
+    if (hullMaterial && hullMaterial.material instanceof THREE.MeshStandardMaterial) {
+      hullMaterial.material.color.set(this.shipDef.bodyColor);
+    }
   }
 
   setOverdrive(active: boolean) {
     this.isOverdrive = active;
-    if (active) {
-      this.bodyMat.emissive.set('#ffaa00');
-      this.bodyMat.emissiveIntensity = 1.5;
-    } else {
-      this.bodyMat.emissive.set(this.shipDef.bodyColor);
-      this.bodyMat.emissiveIntensity = 0.8;
+    // Update ship model materials for overdrive effect
+    const hullMaterial = this.shipModel.group.children[0] as THREE.Mesh;
+    if (hullMaterial && hullMaterial.material instanceof THREE.MeshStandardMaterial) {
+      if (active) {
+        hullMaterial.material.emissive.set('#ffaa00');
+        hullMaterial.material.emissiveIntensity = 1.5;
+      } else {
+        hullMaterial.material.emissive.set(this.shipDef.bodyColor);
+        hullMaterial.material.emissiveIntensity = 0.8;
+      }
     }
   }
 
-  update(dt: number, steeringResponse: number) {
+  update(dt: number, steeringResponse: number, speed: number = 0, boostActive: boolean = false) {
     if (!this.alive) return;
 
     // Smooth movement toward target
@@ -111,37 +76,16 @@ export class Player {
     this.mesh.rotation.z = this.roll;
     this.mesh.rotation.x = this.pitch;
 
-    // Invulnerability timer
+    // Invulnerability timer - blink the entire ship
     if (this.invulnTimer > 0) {
       this.invulnTimer -= dt;
-      this.bodyMesh.visible = Math.floor(this.invulnTimer * 10) % 2 === 0;
+      this.mesh.visible = Math.floor(this.invulnTimer * 10) % 2 === 0;
     } else {
-      this.bodyMesh.visible = true;
+      this.mesh.visible = true;
     }
 
-    // Engine glow pulse
-    const pulse = 0.8 + Math.sin(Date.now() * 0.01) * 0.2;
-    this.engineGlow.scale.setScalar(pulse * this.trailIntensity);
-
-    // Skim aura animation - changes color/opacity based on proximity to meteors
-    if (this.inSkimZone) {
-      // Bright gold when in danger zone
-      this.auraMat.color.lerp(new THREE.Color('#ffaa00'), dt * 8);
-      this.auraMat.opacity = lerp(this.auraMat.opacity, 0.25, dt * 6);
-      this.skimAura.rotation.y += dt * 2;
-      this.skimAura.rotation.x += dt * 1.5;
-    } else if (this.isOverdrive) {
-      // Pulsing rainbow during overdrive
-      const hue = (Date.now() * 0.001) % 1;
-      this.auraMat.color.setHSL(hue, 1, 0.5);
-      this.auraMat.opacity = lerp(this.auraMat.opacity, 0.3, dt * 4);
-      this.skimAura.rotation.y += dt * 4;
-    } else {
-      // Faint cyan when safe
-      this.auraMat.color.lerp(new THREE.Color('#00ffff'), dt * 4);
-      this.auraMat.opacity = lerp(this.auraMat.opacity, 0.05, dt * 4);
-      this.skimAura.rotation.y += dt * 0.5;
-    }
+    // Update ship model animations
+    this.shipModel.update(dt, speed, boostActive);
   }
 
   setInvuln(time: number) {
@@ -167,7 +111,7 @@ export type MeteorMovement = 'static' | 'drift' | 'oscillate';
 
 export interface MeteorData {
   active: boolean;
-  mesh: THREE.Mesh;
+  mesh: THREE.Group; // Changed from Mesh to Group for detailed models
   coreRadius: number;
   grazeRadius: number;
   nearMissRadius: number;
@@ -226,14 +170,21 @@ export class MeteorPool {
 
   constructor(scene: THREE.Scene, size: number) {
     this.scene = scene;
+    
+    // Meteor type distribution (crystal is rare)
+    const meteorTypes = [MeteorType.JAGGED, MeteorType.ROUNDED, MeteorType.ELONGATED, MeteorType.CRYSTAL];
+    const meteorWeights = [0.35, 0.30, 0.25, 0.10];
+    
     for (let i = 0; i < size; i++) {
-      const geo = getMeteorGeo(i % 2 === 0 ? 1 : 0);
-      const mat = getMeteorMat(i % meteorColors.length);
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.visible = false;
-      scene.add(mesh);
+      // Select meteor type based on weights
+      const type = this.weightedRandom(meteorTypes, meteorWeights);
+      const size = 0.5 + Math.random() * 1.5;
+      const group = createMeteorModel(type, size);
+      group.visible = false;
+      scene.add(group);
+      
       this.pool.push({
-        active: false, mesh, coreRadius: 1, grazeRadius: 1.7, nearMissRadius: 1.65,
+        active: false, mesh: group, coreRadius: size, grazeRadius: size + C.playerRadius + C.grazeThickness, nearMissRadius: size * C.nearMissMultiplier,
         hasBeenNearMissed: false, hasGrazedPlayer: false, hasDamagedPlayer: false,
         wasInNearMissZone: false, minDistRecorded: 999,
         grazeAccum: 0, movementType: 'static',
@@ -241,6 +192,17 @@ export class MeteorPool {
         baseX: 0, baseY: 0, rotSpeed: new THREE.Vector3(),
       });
     }
+  }
+
+  private weightedRandom<T>(items: T[], weights: number[]): T {
+    const total = weights.reduce((a, b) => a + b, 0);
+    let random = Math.random() * total;
+    
+    for (let i = 0; i < items.length; i++) {
+      random -= weights[i];
+      if (random <= 0) return items[i];
+    }
+    return items[items.length - 1];
   }
 
   acquire(): MeteorData | null {
@@ -279,8 +241,12 @@ export function initMeteor(m: MeteorData, x: number, y: number, z: number, radiu
   m.oscillatePhase = Math.random() * Math.PI * 2;
   m.oscillateAmp = 1.0 + Math.random() * 1.5;
 
-  const scale = radius;
-  m.mesh.scale.set(scale, scale * (0.7 + Math.random() * 0.6), scale);
+  // Scale the group uniformly (the model already has its base size)
+  const scale = radius / m.mesh.userData.size;
+  m.mesh.scale.setScalar(scale);
+  
+  // Reset rotation
+  m.mesh.rotation.set(0, 0, 0);
   m.rotSpeed.set(randRange(-1, 1), randRange(-1, 1), randRange(-0.5, 0.5));
 
   if (movement === 'drift') {
@@ -292,9 +258,9 @@ export function initMeteor(m: MeteorData, x: number, y: number, z: number, radiu
 
 export function updateMeteor(m: MeteorData, dt: number, elapsed: number) {
   if (!m.active) return;
-  m.mesh.rotation.x += m.rotSpeed.x * dt;
-  m.mesh.rotation.y += m.rotSpeed.y * dt;
-  m.mesh.rotation.z += m.rotSpeed.z * dt;
+  
+  // Use the new detailed meteor model update function
+  updateMeteorModel(m.mesh, dt);
 
   if (m.movementType === 'drift') {
     m.mesh.position.x += m.driftVel.x * dt;
@@ -306,21 +272,15 @@ export function updateMeteor(m: MeteorData, dt: number, elapsed: number) {
 }
 
 // ============ PICKUP ============
+import { createPickupModel, PickupModel, PickupType } from './entities/pickupModels';
+
 export interface PickupData {
   active: boolean;
-  mesh: THREE.Mesh;
+  mesh: THREE.Group; // Changed from Mesh to Group for detailed models
   position: THREE.Vector3;
   attracted: boolean;
+  model: PickupModel;
 }
-
-const pickupGeo = new THREE.OctahedronGeometry(0.2, 0);
-const pickupMat = new THREE.MeshStandardMaterial({
-  color: '#00ffcc',
-  emissive: '#00ffcc',
-  emissiveIntensity: 1.2,
-  roughness: 0.2,
-  metalness: 0.8,
-});
 
 export class PickupPool {
   pool: PickupData[] = [];
@@ -328,11 +288,21 @@ export class PickupPool {
 
   constructor(scene: THREE.Scene, size: number) {
     this.scene = scene;
+    
+    const types = [PickupType.STARDUST, PickupType.SHIELD, PickupType.BOOST, PickupType.MULTIPLIER];
+    
     for (let i = 0; i < size; i++) {
-      const mesh = new THREE.Mesh(pickupGeo, pickupMat);
-      mesh.visible = false;
-      scene.add(mesh);
-      this.pool.push({ active: false, mesh, position: new THREE.Vector3(), attracted: false });
+      const type = types[Math.floor(Math.random() * types.length)];
+      const model = createPickupModel(type);
+      model.group.visible = false;
+      scene.add(model.group);
+      this.pool.push({ 
+        active: false, 
+        mesh: model.group, 
+        position: new THREE.Vector3(), 
+        attracted: false,
+        model
+      });
     }
   }
 

@@ -4,6 +4,7 @@ import { Player, MeteorPool, PickupPool, ParticlePool, FloatingTextPool, Trail, 
 import { InputSystem, SpawnSystem, CollisionSystem, CameraSystem, EffectSystem } from './systems';
 import { Audio, initAudio, setMuted } from './audio';
 import { clamp } from './utils';
+import { createBackground, BackgroundModel } from './entities/backgroundModels';
 
 export interface RunStats {
   score: number;
@@ -72,8 +73,8 @@ export class Game {
   // Starfield
   private stars!: THREE.Points;
 
-  // Parallax background elements
-  private parallaxObjects: THREE.Mesh[] = [];
+  // Background model with planet, nebula, and asteroid belt
+  private backgroundModel!: BackgroundModel;
 
   // Gap triggers for immediate feedback
   private gapTriggers: { z: number; active: boolean }[] = [];
@@ -135,31 +136,9 @@ export class Game {
   }
 
   private createParallaxBackground() {
-    // Large wireframe ring far in the background
-    const ring1Geo = new THREE.TorusGeometry(30, 0.5, 8, 32);
-    const ring1Mat = new THREE.MeshBasicMaterial({ color: 0x222244, wireframe: true, transparent: true, opacity: 0.3 });
-    const ring1 = new THREE.Mesh(ring1Geo, ring1Mat);
-    ring1.position.set(20, 10, -180);
-    ring1.rotation.x = Math.PI * 0.3;
-    this.scene.add(ring1);
-    this.parallaxObjects.push(ring1);
-
-    // Wireframe sphere
-    const sphere1Geo = new THREE.IcosahedronGeometry(15, 1);
-    const sphere1Mat = new THREE.MeshBasicMaterial({ color: 0x1a1a3a, wireframe: true, transparent: true, opacity: 0.2 });
-    const sphere1 = new THREE.Mesh(sphere1Geo, sphere1Mat);
-    sphere1.position.set(-25, -5, -200);
-    this.scene.add(sphere1);
-    this.parallaxObjects.push(sphere1);
-
-    // Another ring
-    const ring2Geo = new THREE.TorusGeometry(20, 0.3, 6, 24);
-    const ring2Mat = new THREE.MeshBasicMaterial({ color: 0x331144, wireframe: true, transparent: true, opacity: 0.25 });
-    const ring2 = new THREE.Mesh(ring2Geo, ring2Mat);
-    ring2.position.set(-15, 15, -160);
-    ring2.rotation.z = Math.PI * 0.5;
-    this.scene.add(ring2);
-    this.parallaxObjects.push(ring2);
+    // Create detailed background with planet, nebula, and asteroid belt
+    this.backgroundModel = createBackground();
+    this.scene.add(this.backgroundModel.group);
   }
 
   private createStarfield() {
@@ -588,11 +567,8 @@ export class Game {
       if (!p.active) continue;
       p.position.z += moveZ;
       p.mesh.position.z = p.position.z;
-      p.mesh.rotation.y += dt * 3;
-      p.mesh.rotation.x += dt * 2;
-      // Pulsing scale animation
-      const pulseScale = 1.0 + Math.sin(Date.now() * 0.005 + p.position.x) * 0.2;
-      p.mesh.scale.setScalar(pulseScale);
+      // Update pickup model animations
+      p.model.update(dt, Date.now() * 0.001);
 
       if (p.position.z > C.despawnZ) {
         this.pickupPool.release(p);
@@ -602,7 +578,7 @@ export class Game {
     // Player
     const steeringResp = C.steeringResponse + this.save.upgradeLevels.handling * 1.2;
     const shipHandling = (SHIPS.find(s => s.id === this.save.selectedShipId) || SHIPS[0]).handling;
-    this.player.update(dt, steeringResp * shipHandling);
+    this.player.update(dt, steeringResp * shipHandling, this.currentSpeed / C.maxSpeed, this.boostActive);
     this.player.trailIntensity = this.boostActive ? 2.0 : 1.0;
 
     // Trail
@@ -680,6 +656,9 @@ export class Game {
     // Starfield scroll
     this.stars.position.z += moveZ * 0.1;
     if (this.stars.position.z > 50) this.stars.position.z = 0;
+
+    // Update background model
+    this.backgroundModel.update(dt, effectiveSpeed);
   }
 
   private render() {
